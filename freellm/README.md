@@ -22,11 +22,15 @@ Compatible macOS, Linux et Windows via WSL.
 
 ## Installation
 
-Décompresse `freellm.zip`, puis, depuis le dossier qui contient `freellm/` :
+```bash
+git clone https://github.com/pinotalan08-svg/alana.git
+```
 
 ```bash
-bash freellm/install.sh
+bash alana/freellm/install.sh
 ```
+
+(Avec l'archive `freellm.zip` : décompresse-la, puis lance `bash freellm/install.sh`.)
 
 Le script :
 
