@@ -68,7 +68,8 @@ function onPointerUp(e) {
   if (!d || d.long || !canAct()) return;
   const dx = e.clientX - d.x, dy = e.clientY - d.y;
   if (Math.hypot(dx, dy) > 24) {
-    const [mx, my] = SWIPE_DIRS[Math.round(Math.atan2(dy, dx) / (Math.PI / 4))];
+    // in third person, swiping up means straight ahead of the camera
+    const [mx, my] = V3.active ? relativeDir(dx, dy) : SWIPE_DIRS[Math.round(Math.atan2(dy, dx) / (Math.PI / 4))];
     doMove(mx, my);
   } else {
     tapTile(screenToTile(e.clientX, e.clientY));
@@ -89,7 +90,8 @@ function onKey(e) {
   const dir = KEYS[e.code] || KEYS[e.key.toLowerCase()];
   if (dir) {
     e.preventDefault();
-    doMove(dir[0], dir[1]);
+    const [mx, my] = V3.active ? relativeDir(dir[0], dir[1]) : dir;
+    doMove(mx, my);
   } else if (e.key === ' ' || e.code === 'Numpad5') {
     e.preventDefault();
     doWait(false);

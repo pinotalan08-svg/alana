@@ -4,6 +4,7 @@ function boot() {
   const canvas = document.getElementById('view');
   buildSprites();
   initView(canvas);
+  init3D(document.getElementById('view3d'));
   initUI();
   initInput(canvas);
   showTitle();
@@ -13,7 +14,8 @@ function boot() {
     const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
     last = now;
     tickAuto(dt);
-    renderFrame(now, dt);
+    if (V3.active) render3D(now, dt);
+    else renderFrame(now, dt);
     if (UI.modal === 'title') drawTitle(now / 1000);
     requestAnimationFrame(loop);
   };

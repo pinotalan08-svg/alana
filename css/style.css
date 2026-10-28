@@ -227,7 +227,8 @@ img {
   overflow: hidden;
 }
 
-#view {
+#view,
+#view3d {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -565,6 +566,13 @@ img {
 .btn:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 12px;
 }
 
 .link-btn {

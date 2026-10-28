@@ -6,7 +6,7 @@ const View = {
   camX: 0, camY: 0, snap: true, shake: 0, lastDraw: 0, reduced: false,
   ents: new Map(), // entity id -> { rx, ry, flash, bump, bdx, bdy }
   floats: [], parts: [], shots: [], fades: [], marker: null,
-  tileset: null, tilesetTheme: -1,
+  tilesets: {},
 };
 
 const BG = '#0b0910';
@@ -96,6 +96,10 @@ function initView(canvas) {
   });
 }
 
+function tilesetFor(theme) {
+  return View.tilesets[theme] || (View.tilesets[theme] = buildTileset(theme));
+}
+
 function resizeView() {
   const c = View.canvas;
   const rect = c.getBoundingClientRect();
@@ -121,7 +125,7 @@ function entVis(e) {
 }
 
 function addFloat(x, y, text, color, scale = 1) {
-  View.floats.push({ x: x + 0.5, y, text, color, scale, t: 0, dur: 0.95 });
+  View.floats.push({ x: x + 0.5, y, gy: Math.floor(y + 0.5) + 0.5, text, color, scale, t: 0, dur: 0.95 });
 }
 
 function burst(x, y, color, n, speed, lift = 0) {
@@ -130,7 +134,7 @@ function burst(x, y, color, n, speed, lift = 0) {
     const a = Math.random() * Math.PI * 2;
     const s = speed * (0.4 + Math.random() * 0.8);
     View.parts.push({
-      x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s + lift,
+      x, y, gy: y, z: 0, vx: Math.cos(a) * s, vy: Math.sin(a) * s + lift, vz: (Math.random() * 2 - 1) * s * 0.7,
       life: 0, max: 0.35 + Math.random() * 0.4, color, size: Math.random() < 0.3 ? 2 : 1,
     });
   }
@@ -143,6 +147,7 @@ function viewOrigin() {
 }
 
 function screenToTile(clientX, clientY) {
+  if (V3.active) return pick3D(clientX, clientY);
   const rect = View.canvas.getBoundingClientRect();
   const { ox, oy } = viewOrigin();
   const px = (clientX - rect.left) * View.dpr, py = (clientY - rect.top) * View.dpr;
@@ -194,6 +199,7 @@ function updateView(dt) {
     p.life += dt;
     p.x += p.vx * dt;
     p.y += p.vy * dt;
+    p.z += p.vz * dt;
     p.vy += 6 * dt;
     p.vx *= 0.92;
   }
@@ -253,11 +259,7 @@ function drawWorld(time) {
   ctx.fillStyle = BG;
   ctx.fillRect(0, 0, W, H);
   if (!S) return;
-  if (View.tilesetTheme !== S.theme) {
-    View.tileset = buildTileset(S.theme);
-    View.tilesetTheme = S.theme;
-  }
-  const TS = View.tileset;
+  const TS = tilesetFor(S.theme);
   let { ox, oy } = viewOrigin();
   if (View.shake > 0 && !View.reduced) {
     const m = View.shake * t * 0.18;
@@ -421,8 +423,7 @@ function drawCreature(e, def, ox, oy, time) {
 function drawTitleArt(canvas, time) {
   const g = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height, k = Math.floor(H / 24), t = k * 8;
-  if (!View.titleTiles) View.titleTiles = buildTileset(0);
-  const TS = View.titleTiles;
+  const TS = tilesetFor(0);
   g.imageSmoothingEnabled = false;
   g.fillStyle = BG;
   g.fillRect(0, 0, W, H);

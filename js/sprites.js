@@ -65,6 +65,17 @@ const SPRITES = {
     '..B.B...',
     '.nn.nn..',
   ],
+  // seen from behind, for the third-person camera
+  heroBack: [
+    '..MLLM.W',
+    '..LLLL.W',
+    '..MLLM.W',
+    '.BbbbB.W',
+    'S.bbb.YY',
+    '..bbb.SN',
+    '..B.B...',
+    '.nn.nn..',
+  ],
   rat: [
     '........',
     '........',

@@ -17,6 +17,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jacquard+12&family=Jersey+15&display=swap">
 <link rel="stylesheet" href="css/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
 <!-- app:start -->
@@ -40,6 +41,7 @@
   </header>
 
   <main id="stage">
+    <canvas id="view3d" aria-hidden="true" hidden></canvas>
     <canvas id="view" aria-label="Carte du donjon"></canvas>
     <ol id="log" aria-live="polite"></ol>
     <div id="banner" aria-live="polite"><small id="banner-sub"></small><strong id="banner-main"></strong></div>
@@ -79,7 +81,10 @@
         <button class="btn" id="btn-help" type="button">Comment jouer</button>
         <button class="btn" id="btn-scores" type="button">Meilleurs scores</button>
       </div>
-      <button class="link-btn" id="btn-sound-title" type="button">Son : activé</button>
+      <div class="links">
+        <button class="link-btn" id="btn-view-title" type="button">Vue : troisième personne</button>
+        <button class="link-btn" id="btn-sound-title" type="button">Son : activé</button>
+      </div>
     </div>
   </section>
 
@@ -88,7 +93,8 @@
       <h2>Comment jouer</h2>
       <ul class="help">
         <li><b>Touche une case</b> pour t’y rendre. Touche un monstre à côté de toi pour l’attaquer.</li>
-        <li><b>Glisse le doigt</b> pour faire un seul pas, dans 8 directions.</li>
+        <li><b>Glisse le doigt</b> pour faire un seul pas : vers le haut, c’est droit devant.</li>
+        <li>La <b>caméra</b> se place derrière toi et suit ton regard. Le menu Pause propose aussi une vue du dessus.</li>
         <li><b>Marche sur les objets</b> pour les ramasser. Une arme ou une armure meilleure s’équipe toute seule.</li>
         <li><b>Touche ta besace</b>, en bas, pour boire une potion ou lire un parchemin.</li>
         <li><b>Attendre</b> passe un tour face aux ennemis, ou te fait te reposer quand la voie est libre.</li>
@@ -115,6 +121,7 @@
       <p class="pause-info" id="pause-info"></p>
       <div class="menu">
         <button class="btn primary" id="btn-resume" type="button">Reprendre</button>
+        <button class="btn" id="btn-view" type="button">Vue : troisième personne</button>
         <button class="btn" id="btn-sound" type="button">Son : activé</button>
         <button class="btn" id="btn-vibrate" type="button">Vibrations : activées</button>
         <button class="btn" id="btn-help2" type="button">Comment jouer</button>
@@ -158,6 +165,7 @@
 <script src="js/map.js"></script>
 <script src="js/game.js"></script>
 <script src="js/render.js"></script>
+<script src="js/render3d.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/audio.js"></script>
 <script src="js/input.js"></script>

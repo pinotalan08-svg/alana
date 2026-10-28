@@ -1,6 +1,8 @@
 // Offline support: the game shell is cached on first visit, so it runs without network afterwards.
-const CACHE = 'abysses-v1';
-const FONT_CACHE = 'abysses-fonts-v1';
+const CACHE = 'abysses-v2';
+// fonts and three.js come from CDNs: cached on first use so the game keeps working offline
+const EXT_CACHE = 'abysses-ext-v1';
+const EXT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com', 'cdnjs.cloudflare.com'];
 const ASSETS = [
   './',
   './index.html',
@@ -12,6 +14,7 @@ const ASSETS = [
   './js/map.js',
   './js/game.js',
   './js/render.js',
+  './js/render3d.js',
   './js/ui.js',
   './js/audio.js',
   './js/input.js',
@@ -29,7 +32,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== FONT_CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== EXT_CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });
@@ -55,9 +58,9 @@ self.addEventListener('fetch', (event) => {
         return hit || fresh;
       }),
     );
-  } else if (url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com') {
+  } else if (EXT_HOSTS.includes(url.hostname)) {
     event.respondWith(
-      caches.open(FONT_CACHE).then(async (cache) => {
+      caches.open(EXT_CACHE).then(async (cache) => {
         const hit = await cache.match(req);
         if (hit) return hit;
         const res = await fetch(req);

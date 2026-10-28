@@ -3,7 +3,7 @@
 const SETTINGS_KEY = 'abysses.settings.v1';
 
 const UI = {
-  settings: { sound: true, vibrate: true },
+  settings: { sound: true, vibrate: true, view: '3d' },
   modal: 'title', // name of the open screen, or null while playing
   back: 'title', // where "Retour" goes from the help and score screens
   popFor: null,
@@ -18,6 +18,12 @@ function initUI() {
   Sfx.on = UI.settings.sound;
   document.querySelectorAll('img[data-icon]').forEach((img) => (img.src = spriteURL(img.dataset.icon)));
   buildInventory();
+  if (!V3.ok) {
+    // no WebGL (or three.js failed to load): the top-down view is the only one
+    $('btn-view').hidden = true;
+    $('btn-view-title').hidden = true;
+  }
+  applyViewMode();
   refreshToggles();
 
   $('btn-menu').onclick = openPause;
@@ -40,6 +46,8 @@ function initUI() {
   };
   document.querySelectorAll('[data-back]').forEach((b) => (b.onclick = () => showScreen(UI.back)));
   $('btn-resume').onclick = () => showScreen(null);
+  $('btn-view').onclick = toggleView;
+  $('btn-view-title').onclick = toggleView;
   $('btn-sound').onclick = toggleSound;
   $('btn-sound-title').onclick = toggleSound;
   $('btn-vibrate').onclick = toggleVibrate;
@@ -367,7 +375,30 @@ function toggleVibrate() {
   buzz(30);
 }
 
+function applyViewMode() {
+  V3.active = V3.ok && UI.settings.view !== '2d';
+  $('view3d').hidden = !V3.active;
+  V3.dirty = true;
+  V3.lastDraw = 0;
+  View.lastDraw = 0;
+  View.snap = true;
+  if (S) {
+    V3.px = S.player.x;
+    V3.py = S.player.y;
+  }
+}
+
+function toggleView() {
+  UI.settings.view = UI.settings.view === '2d' ? '3d' : '2d';
+  store.set(SETTINGS_KEY, UI.settings);
+  applyViewMode();
+  refreshToggles();
+}
+
 function refreshToggles() {
+  const view = `Vue : ${UI.settings.view === '2d' ? 'du dessus' : 'troisième personne'}`;
+  $('btn-view').textContent = view;
+  $('btn-view-title').textContent = view;
   const sound = `Son : ${UI.settings.sound ? 'activé' : 'coupé'}`;
   $('btn-sound').textContent = sound;
   $('btn-sound-title').textContent = sound;
