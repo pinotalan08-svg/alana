@@ -1,34 +1,42 @@
 'use strict';
 
+const STEP = 1 / 60;
+
 function boot() {
-  const canvas = document.getElementById('view');
-  buildSprites();
-  initView(canvas);
-  init3D(document.getElementById('view3d'));
+  const webgl = initScene(document.getElementById('gl'), document.getElementById('fx'));
   initUI();
-  initInput(canvas);
+  initInput();
+  if (webgl) setQuality(UI.settings.quality);
+  else {
+    $('no-webgl').hidden = false;
+    $('btn-play').disabled = true;
+  }
   showTitle();
 
-  let last = performance.now();
+  let last = performance.now(), acc = 0;
   const loop = (now) => {
-    const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+    const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
     last = now;
-    tickAuto(dt);
-    if (V3.active) render3D(now, dt);
-    else renderFrame(now, dt);
-    if (UI.modal === 'title') drawTitle(now / 1000);
+    if (inRun() && !isPaused() && document.visibilityState === 'visible') {
+      acc += dt;
+      // fixed steps keep the combat identical whatever the frame rate
+      for (let i = 0; acc >= STEP && i < 6; i++) {
+        updateChamber(STEP);
+        acc -= STEP;
+      }
+      if (acc > STEP * 6) acc = 0;
+    } else {
+      acc = 0;
+    }
+    if (webgl) renderScene(isPaused() ? 0 : dt, now / 1000);
+    updateHud();
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
 
-  // browsers only allow sound after a user gesture
-  document.addEventListener('pointerdown', () => Sfx.unlock(), { passive: true });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') saveGame();
+    if (document.visibilityState === 'hidden' && inRun() && !UI.screen) openPause();
   });
-  window.addEventListener('pagehide', saveGame);
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => (View.lastDraw = 0));
-
   if ('serviceWorker' in navigator && !window.ABYSSES_NO_SW && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }

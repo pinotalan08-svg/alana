@@ -1,125 +1,200 @@
 'use strict';
 
-const MAX_FLOOR = 10;
-const FOV_RADIUS = 7;
+// ---- Run structure ----------------------------------------------------------------------------
+// Three biomes of six chambers: four fights, a rest stop (fountain and merchant), then a boss.
+const ROOMS_PER_BIOME = 6;
+const REST_STEP = 4;
+const BOSS_STEP = 5;
 
-// One visual theme per depth band. Colors feed the procedural tile textures.
-const THEMES = [
+const BIOMES = [
   {
-    name: 'Les Cryptes', flagstones: true, torches: true,
-    floor: '#2c2734', floorAlt: '#302a39', grout: '#221e29', speck: '#3a3345', decoA: '#cfc6b4', decoB: '#8f8778',
-    wallTop: '#141018', wallTopHi: '#1d1823', wallFace: '#4a4157', wallHi: '#625675', mortar: '#2e2837',
+    name: 'Les Cryptes',
+    enemies: [['wretch', 10], ['bat', 6], ['archer', 5], ['slime', 4]],
+    boss: 'sentinel',
+    floor: 'crypt',
+    fog: 0x120b16, light: 0xffd2a8, sky: 0x6b5a8c, ground: 0x2a1410, accent: 0xff8a3a, abyss: '#4a0f22',
   },
   {
-    name: 'Les Grottes', flagstones: false, torches: false,
-    floor: '#212d27', floorAlt: '#25332c', grout: '#1a231e', speck: '#2f4238', decoA: '#6fae5f', decoB: '#4c8a49',
-    wallTop: '#0d1410', wallTopHi: '#142019', wallFace: '#3b5245', wallHi: '#557560', mortar: '#26352d',
+    name: 'Les Grottes',
+    enemies: [['wretch', 6], ['bat', 6], ['slime', 6], ['wraith', 6], ['archer', 5], ['brute', 4]],
+    boss: 'troll',
+    floor: 'cave',
+    fog: 0x07141a, light: 0xc8f0ff, sky: 0x3c7a8c, ground: 0x0e1c14, accent: 0x5fe0ff, abyss: '#0d3a3f',
   },
   {
-    name: 'Les Forges', flagstones: true, torches: true,
-    floor: '#33251f', floorAlt: '#382922', grout: '#261a15', speck: '#46322a', decoA: '#f08a3c', decoB: '#b8501f',
-    wallTop: '#160d0b', wallTopHi: '#211411', wallFace: '#5c3a2d', wallHi: '#7b4c3a', mortar: '#351f18',
-  },
-  {
-    name: 'Le Repaire du Wyrm', flagstones: true, torches: true,
-    floor: '#2a1f2f', floorAlt: '#2f2236', grout: '#1f1724', speck: '#3c2c47', decoA: '#f7d154', decoB: '#b98a2c',
-    wallTop: '#110b14', wallTopHi: '#1b121f', wallFace: '#4a2e50', wallHi: '#68436f', mortar: '#2a1a2e',
+    name: 'Les Forges',
+    enemies: [['brute', 6], ['imp', 6], ['wraith', 5], ['archer', 5], ['wretch', 5]],
+    boss: 'wyrm',
+    floor: 'forge',
+    fog: 0x1a0805, light: 0xffc08a, sky: 0x8a3a20, ground: 0x2a0a04, accent: 0xff5a1a, abyss: '#7a1e05',
   },
 ];
+const TOTAL_ROOMS = BIOMES.length * ROOMS_PER_BIOME;
 
-const themeFor = (floor) => (floor >= MAX_FLOOR ? 3 : floor >= 7 ? 2 : floor >= 4 ? 1 : 0);
+// ---- Hero and weapons -------------------------------------------------------------------------
 
-// `the` is the name with its article, as used in log sentences ("Le rat te mord").
-const MONSTERS = {
-  rat: {
-    the: 'le rat', spr: 'rat', hp: 4, atk: 2, def: 0, xp: 1, speed: 10,
-    floors: [1, 3], weight: 10, verb: 'te mord', blood: '#b8323c',
+const HERO = { hp: 60, speed: 6.6, radius: 0.45, dashDist: 4.4, dashTime: 0.16, dashRegen: 0.55, iframes: 0.55 };
+
+const WEAPONS = {
+  sword: {
+    name: 'Lame des Abysses',
+    desc: 'Trois coups enchaînés, tourbillon en spécial.',
+    combo: [
+      { dmg: 20, range: 2.3, arc: 2.0, lunge: 3.2, windup: 0.07, active: 0.1, recover: 0.17 },
+      { dmg: 20, range: 2.3, arc: 2.0, lunge: 3.2, windup: 0.07, active: 0.1, recover: 0.17 },
+      { dmg: 34, range: 2.8, arc: 1.3, lunge: 6.5, windup: 0.13, active: 0.12, recover: 0.3 },
+    ],
+    dashStrike: { dmg: 30, range: 2.6, arc: 1.6, lunge: 7 },
+    special: { dmg: 30, radius: 2.7, windup: 0.16, recover: 0.28, knock: 7 },
+  },
+  bow: {
+    name: 'Arc des Échos',
+    desc: 'Tir rapide à distance. Maintiens pour une flèche chargée qui transperce.',
+    shot: { dmg: 16, speed: 26, cooldown: 0.3, range: 15 },
+    charged: { dmg: 46, speed: 34, time: 0.5 },
+    special: { dmg: 13, count: 5, spread: 0.85, speed: 22, recover: 0.38 },
+    cost: 40,
+  },
+};
+
+const CAST = { dmg: 40, speed: 22, range: 11, recover: 0.2, returnAfter: 9 };
+
+// ---- Enemies ---------------------------------------------------------------------------------
+// ai: behaviour routine in game.js. Bosses use their own routines.
+
+const ENEMIES = {
+  wretch: {
+    name: 'Rôdeur', ai: 'melee', hp: 40, speed: 3.6, radius: 0.5, dmg: 8,
+    reach: 1.7, arc: 1.4, windup: 0.55, lunge: 7, cooldown: 1.1, color: 0x6b7a5a,
   },
   bat: {
-    the: 'la chauve-souris', spr: 'bat', hp: 3, atk: 3, def: 0, xp: 2, speed: 15, erratic: 0.5, awake: true,
-    floors: [1, 4], weight: 7, verb: 'te mord', blood: '#b8323c',
+    name: 'Chauve-souris', ai: 'swoop', hp: 18, speed: 5, radius: 0.38, dmg: 6, cooldown: 1.6, flying: true, color: 0x5b3a85,
   },
-  goblin: {
-    the: 'le gobelin', spr: 'goblin', hp: 6, atk: 3, def: 1, xp: 3, speed: 10,
-    floors: [1, 5], weight: 9, verb: 'te frappe', blood: '#5d9a3e',
+  archer: {
+    name: 'Archer squelette', ai: 'archer', hp: 30, speed: 2.8, radius: 0.45, dmg: 8,
+    aim: 0.9, cooldown: 2.5, projSpeed: 13, color: 0xe6dcc4,
   },
   slime: {
-    the: 'la gelée', spr: 'slime', hp: 12, atk: 4, def: 0, xp: 3, speed: 5,
-    floors: [2, 6], weight: 6, verb: 't’englue', blood: '#79c26a',
+    name: 'Gelée', ai: 'hopper', hp: 52, speed: 3, radius: 0.6, dmg: 7, cooldown: 1.1, split: 'slimelet', color: 0x79c26a,
   },
-  skeleton: {
-    the: 'le squelette', spr: 'skeleton', hp: 9, atk: 5, def: 1, xp: 5, speed: 10, kite: true,
-    floors: [3, 7], weight: 6, verb: 'te frappe', blood: '#e6dcc4',
-    ranged: { range: 5, cd: 2, verb: 'te décoche une flèche', color: '#e6dcc4' },
+  slimelet: {
+    name: 'Gelée', ai: 'hopper', hp: 18, speed: 3.6, radius: 0.38, dmg: 5, cooldown: 0.9, color: 0x9be37a,
   },
-  wolf: {
-    the: 'le loup', spr: 'wolf', hp: 10, atk: 5, def: 1, xp: 5, speed: 20, awake: true,
-    floors: [4, 7], weight: 6, verb: 'te mord', blood: '#b8323c',
+  wraith: {
+    name: 'Spectre', ai: 'wraith', hp: 46, speed: 2.8, radius: 0.48, dmg: 10, cooldown: 3.2, flying: true, color: 0x7fe0d0,
   },
-  orc: {
-    the: 'l’orc', spr: 'orc', hp: 18, atk: 8, def: 3, xp: 8, speed: 10,
-    floors: [5, 9], weight: 7, verb: 'te cogne', blood: '#b8323c',
+  brute: {
+    name: 'Brute', ai: 'slam', hp: 130, speed: 2.5, radius: 0.85, dmg: 16,
+    windup: 0.95, slamRadius: 2.4, cooldown: 2.2, heavy: true, color: 0x8a4a32,
   },
-  ghost: {
-    the: 'le spectre', spr: 'ghost', hp: 14, atk: 7, def: 3, xp: 9, speed: 10, phase: true, awake: true,
-    floors: [6, 9], weight: 5, verb: 'te glace les os', blood: '#9fe6f2',
+  imp: {
+    name: 'Démon', ai: 'caster', hp: 70, speed: 3, radius: 0.5, dmg: 8, cooldown: 3.1, color: 0xd8454f,
+  },
+  sentinel: {
+    name: 'La Sentinelle', title: 'Gardienne des Cryptes', ai: 'sentinel', hp: 1100, speed: 2.8, radius: 1.15, dmg: 12,
+    boss: true, heavy: true, color: 0xcfc6b4, shards: 25,
   },
   troll: {
-    the: 'le troll', spr: 'troll', hp: 30, atk: 10, def: 4, xp: 14, speed: 10, regen: 1,
-    floors: [7, 10], weight: 5, verb: 't’écrase', blood: '#5d9a3e',
-  },
-  demon: {
-    the: 'le démon', spr: 'demon', hp: 22, atk: 11, def: 4, xp: 14, speed: 10, kite: true,
-    floors: [8, 10], weight: 5, verb: 'te griffe', blood: '#f2a03d',
-    ranged: { range: 6, cd: 3, verb: 'te lance une boule de feu', color: '#ff8a3d' },
-  },
-  mimic: {
-    the: 'la mimique', spr: 'mimic', hp: 16, atk: 6, def: 2, xp: 8, speed: 10,
-    floors: [1, 10], weight: 0, verb: 'te dévore à moitié', blood: '#b8323c',
+    name: 'Le Roi des cavernes', title: 'Seigneur des Grottes', ai: 'troll', hp: 1900, speed: 2.6, radius: 1.35, dmg: 16,
+    boss: true, heavy: true, color: 0x6f8f7c, shards: 40,
   },
   wyrm: {
-    the: 'le Wyrm', name: 'Vorgath, le Wyrm', spr: 'wyrm', hp: 220, atk: 18, def: 8, xp: 0, speed: 10,
-    boss: true, awake: true, floors: [10, 10], weight: 0, verb: 'te déchire', blood: '#f2a03d',
-    ranged: { range: 7, cd: 3, mult: 1.4, verb: 'crache un torrent de flammes', color: '#ffb347' },
+    name: 'Vorgath, le Wyrm', title: 'Le cœur des Abysses', ai: 'wyrm', hp: 3000, speed: 2.2, radius: 1.9, dmg: 16,
+    boss: true, heavy: true, color: 0xc8323f, shards: 60,
   },
 };
 
-const CONSUMABLES = {
-  potion: { name: 'Potion de soin', spr: 'potion', weight: 22, desc: 'Rend 40 % de tes PV max.' },
-  elixirStr: { name: 'Élixir de force', spr: 'elixirStr', weight: 5, desc: '+1 en attaque, pour toujours.' },
-  elixirVit: { name: 'Élixir de vigueur', spr: 'elixirVit', weight: 6, desc: '+6 PV max, pour toujours.' },
-  scrollFire: { name: 'Parchemin de feu', spr: 'scrollFire', weight: 7, desc: 'Brûle tous les ennemis en vue.' },
-  scrollTele: { name: 'Parchemin de téléportation', spr: 'scrollTele', weight: 8, desc: 'T’envoie ailleurs sur l’étage, au hasard.' },
-  scrollMap: { name: 'Parchemin de clairvoyance', spr: 'scrollMap', weight: 7, desc: 'Révèle tout le plan de l’étage.' },
+// ---- Blessings ---------------------------------------------------------------------------------
+// Six Ancients, each offering one blessing per move (attack, special, dash, cast) and passives.
+
+const ANCIENTS = {
+  storm: { name: 'La Tempête', color: '#7cc4ff', glyph: 'bolt', line: 'Que la foudre guide ta lame.' },
+  ember: { name: 'La Braise', color: '#ff7b39', glyph: 'flame', line: 'Réduis-les en cendres.' },
+  frost: { name: 'Le Givre', color: '#a8f0ff', glyph: 'flake', line: 'Le froid n’oublie personne.' },
+  tide: { name: 'La Marée', color: '#38d6b8', glyph: 'wave', line: 'Repousse-les jusqu’aux murs.' },
+  shadow: { name: 'L’Ombre', color: '#b98cff', glyph: 'moon', line: 'Frappe là où ils ne regardent pas.' },
+  wind: { name: 'Le Vent', color: '#a6ec7e', glyph: 'feather', line: 'Plus vite que la mort.' },
 };
-const INV_ORDER = Object.keys(CONSUMABLES);
-const STACK_MAX = 9;
 
-const WEAPONS = [
-  { name: 'Dague', atk: 1, spr: 'dagger' },
-  { name: 'Épée courte', atk: 2, spr: 'shortsword' },
-  { name: 'Épée longue', atk: 4, spr: 'longsword' },
-  { name: 'Hache de guerre', atk: 5, spr: 'axe' },
-  { name: 'Lame runique', atk: 7, spr: 'runeblade' },
+const SLOT_NAMES = { attack: 'Attaque', special: 'Spécial', dash: 'Esquive', cast: 'Éclat', passive: 'Passif' };
+
+// `v` is the base value; rarity and levels scale it unless `fixed`. {v} in the text is replaced.
+const BOONS = {
+  storm_attack: { anc: 'storm', slot: 'attack', name: 'Frappe foudroyante', v: 10, text: 'Tes attaques lancent un éclair qui rebondit sur 2 ennemis proches ({v} dégâts).' },
+  storm_special: { anc: 'storm', slot: 'special', name: 'Tonnerre', v: 30, text: 'Ton spécial fait tomber la foudre sur chaque ennemi touché ({v} dégâts).' },
+  storm_dash: { anc: 'storm', slot: 'dash', name: 'Pas de l’orage', v: 26, text: 'Ton esquive foudroie l’ennemi le plus proche ({v} dégâts).' },
+  storm_cast: { anc: 'storm', slot: 'cast', name: 'Éclat chargé', v: 55, text: 'Ton éclat éclate en arc électrique autour de l’impact ({v} dégâts).' },
+  storm_passive: { anc: 'storm', slot: 'passive', name: 'Surtension', v: 30, text: 'Les éclairs infligent +{v} % de dégâts.' },
+
+  ember_attack: { anc: 'ember', slot: 'attack', name: 'Lame ardente', v: 1, text: 'Tes attaques infligent {v} charge(s) de brûlure (3 dégâts par seconde chacune).' },
+  ember_special: { anc: 'ember', slot: 'special', name: 'Embrasement', v: 7, text: 'Ton spécial fait exploser les brûlures : {v} dégâts par charge.' },
+  ember_dash: { anc: 'ember', slot: 'dash', name: 'Sillage de cendres', v: 18, text: 'Ton esquive laisse une traînée de feu ({v} dégâts par seconde).' },
+  ember_cast: { anc: 'ember', slot: 'cast', name: 'Bombe de braises', v: 22, text: 'Ton éclat embrase le sol pendant 3 s ({v} dégâts par seconde).' },
+  ember_passive: { anc: 'ember', slot: 'passive', name: 'Combustion', v: 40, text: 'La brûlure inflige +{v} % de dégâts.' },
+
+  frost_attack: { anc: 'frost', slot: 'attack', name: 'Morsure du givre', v: 14, text: 'Tes attaques glacent : -{v} % de vitesse par charge. À 4 charges, l’ennemi gèle.' },
+  frost_special: { anc: 'frost', slot: 'special', name: 'Éclat polaire', v: 60, text: 'Ton spécial inflige +{v} % de dégâts aux ennemis glacés.' },
+  frost_dash: { anc: 'frost', slot: 'dash', name: 'Souffle boréal', v: 2, text: 'Ton esquive libère une onde de froid : {v} charges de givre autour de toi.' },
+  frost_cast: { anc: 'frost', slot: 'cast', name: 'Prison de glace', v: 1.6, text: 'Ton éclat gèle sa cible pendant {v} s.' },
+  frost_passive: { anc: 'frost', slot: 'passive', name: 'Bris', v: 40, text: 'Les ennemis glacés éclatent en mourant ({v} dégâts autour).' },
+
+  tide_attack: { anc: 'tide', slot: 'attack', name: 'Ressac', v: 8, text: 'Tes attaques repoussent et éclaboussent autour de la cible ({v} dégâts).' },
+  tide_special: { anc: 'tide', slot: 'special', name: 'Lame de fond', v: 40, text: 'Ton spécial repousse très loin et inflige +{v} % de dégâts.' },
+  tide_dash: { anc: 'tide', slot: 'dash', name: 'Déferlante', v: 20, text: 'Ton esquive pousse une vague devant toi ({v} dégâts).' },
+  tide_cast: { anc: 'tide', slot: 'cast', name: 'Geyser', v: 50, text: 'Ton éclat jaillit en geyser qui projette tout autour ({v} dégâts).' },
+  tide_passive: { anc: 'tide', slot: 'passive', name: 'Écueil', v: 30, text: 'Un ennemi projeté contre un obstacle subit {v} dégâts.' },
+
+  shadow_attack: { anc: 'shadow', slot: 'attack', name: 'Lame furtive', v: 15, text: 'Tes attaques ont {v} % de chances d’infliger un coup critique (×3).' },
+  shadow_special: { anc: 'shadow', slot: 'special', name: 'Exécution', v: 25, text: 'Ton spécial a {v} % de chances d’infliger un coup critique.' },
+  shadow_dash: { anc: 'shadow', slot: 'dash', name: 'Pas de l’ombre', v: 0.6, text: 'Pendant {v} s après une esquive, tous tes coups sont critiques.' },
+  shadow_cast: { anc: 'shadow', slot: 'cast', name: 'Marque sombre', v: 35, text: 'Ton éclat marque sa cible : +{v} % de chances de critique contre elle.' },
+  shadow_passive: { anc: 'shadow', slot: 'passive', name: 'Coup fatal', v: 50, text: 'Les coups critiques infligent +{v} % de dégâts.' },
+
+  wind_attack: { anc: 'wind', slot: 'attack', name: 'Lame vive', v: 20, text: 'Tes attaques sont {v} % plus rapides.' },
+  wind_special: { anc: 'wind', slot: 'special', name: 'Tourbillon', v: 25, text: 'Ton spécial est {v} % plus rapide et plus large.' },
+  wind_dash: { anc: 'wind', slot: 'dash', name: 'Second souffle', v: 1, fixed: true, text: '+{v} charge d’esquive.' },
+  wind_cast: { anc: 'wind', slot: 'cast', name: 'Écho', v: 1, fixed: true, text: '+{v} éclat : tu peux en lancer un de plus.' },
+  wind_passive: { anc: 'wind', slot: 'passive', name: 'Pas léger', v: 15, text: '+{v} % de vitesse de déplacement.' },
+  wind_dodge: { anc: 'wind', slot: 'passive', name: 'Insaisissable', v: 10, text: '{v} % de chances d’esquiver complètement un coup.' },
+};
+
+const RARITIES = [
+  { name: 'Commune', mult: 1, color: '#d8d0c0' },
+  { name: 'Rare', mult: 1.5, color: '#5ea8ff' },
+  { name: 'Épique', mult: 2, color: '#c07cff' },
+  { name: 'Héroïque', mult: 2.5, color: '#ff9b3a' },
 ];
 
-const ARMORS = [
-  { name: 'Armure de cuir', def: 1, spr: 'armor0' },
-  { name: 'Cotte de mailles', def: 2, spr: 'armor1' },
-  { name: 'Armure d’écailles', def: 3, spr: 'armor2' },
-  { name: 'Armure de plates', def: 4, spr: 'armor3' },
-  { name: 'Armure runique', def: 6, spr: 'armor4' },
+// ---- Rewards and shop -------------------------------------------------------------------------
+
+const REWARDS = {
+  boon: { name: 'Bénédiction' },
+  gold: { name: 'Bourse d’or', glyph: 'coin', color: '#f7c948' },
+  heart: { name: 'Cœur de titan', glyph: 'heart', color: '#ff5d6c', text: '+15 PV max' },
+  fruit: { name: 'Fruit d’ambre', glyph: 'fruit', color: '#ff9b3a', text: 'Renforce une bénédiction' },
+  shard: { name: 'Éclats d’âme', glyph: 'shard', color: '#c9a8ff', text: 'Monnaie du Sanctuaire' },
+  forge: { name: 'Enclume', glyph: 'anvil', color: '#ffd98a', text: '+15 % de dégâts d’attaque et de spécial' },
+  rest: { name: 'Halte', glyph: 'fountain', color: '#7cd8ff' },
+  boss: { name: 'Gardien', glyph: 'skull', color: '#ff4a3d' },
+};
+
+const SHOP_ITEMS = [
+  { id: 'heal', name: 'Fiole de vie', text: 'Rend 35 % de tes PV.', cost: 30, glyph: 'heart', color: '#ff5d6c' },
+  { id: 'heart', name: 'Cœur de titan', text: '+15 PV max.', cost: 80, glyph: 'heart', color: '#ffb0b8' },
+  { id: 'fruit', name: 'Fruit d’ambre', text: 'Renforce une bénédiction.', cost: 70, glyph: 'fruit', color: '#ff9b3a' },
+  { id: 'boon', name: 'Bénédiction', text: 'Choisis une bénédiction d’un Ancien au hasard.', cost: 120, glyph: 'star', color: '#ffd98a' },
+  { id: 'defiance', name: 'Sursis', text: 'Reviens d’entre les morts une fois de plus.', cost: 150, glyph: 'ankh', color: '#ffd98a' },
 ];
 
-// Item ids: consumable keys, 'gold', 'chest', 'weapon:<tier>', 'armor:<tier>'.
-function itemDef(id) {
-  if (CONSUMABLES[id]) return CONSUMABLES[id];
-  if (id === 'gold') return { name: 'Pièces d’or', spr: 'gold' };
-  if (id === 'chest') return { name: 'Coffre', spr: 'chest' };
-  const [kind, tier] = id.split(':');
-  if (kind === 'weapon') return { ...WEAPONS[+tier], kind, tier: +tier };
-  if (kind === 'armor') return { ...ARMORS[+tier], kind, tier: +tier };
-  return { name: '?', spr: 'gold' };
-}
+// ---- Sanctuary (permanent upgrades) -------------------------------------------------------------
 
-const xpNext = (lvl) => 4 + lvl * lvl * 3;
+const UPGRADES = [
+  { id: 'vitality', name: 'Vitalité', text: '+8 PV max', costs: [10, 20, 30, 45, 60] },
+  { id: 'might', name: 'Puissance', text: '+6 % de dégâts', costs: [15, 25, 40, 55, 75] },
+  { id: 'insight', name: 'Clairvoyance', text: '+4 % de chances de critique', costs: [20, 35, 50] },
+  { id: 'reprieve', name: 'Sursis', text: 'Reviens une fois d’entre les morts avec 40 % de tes PV', costs: [40, 100] },
+  { id: 'swift', name: 'Élan', text: '+1 charge d’esquive', costs: [60] },
+  { id: 'echo', name: 'Second éclat', text: '+1 éclat à lancer', costs: [50] },
+  { id: 'fortune', name: 'Fortune', text: '+25 or au départ', costs: [10, 20, 30] },
+  { id: 'favor', name: 'Faveur', text: 'Bénédictions rares plus fréquentes', costs: [25, 45, 70] },
+];

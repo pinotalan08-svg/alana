@@ -30,6 +30,14 @@ function shuffle(arr) {
   return arr;
 }
 
+// Viewer preferences read once at start.
+const Prefs = { reduced: false };
+try {
+  Prefs.reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+} catch {
+  /* matchMedia unavailable */
+}
+
 // Small seeded PRNG, used where visuals must be stable (tile textures).
 function mulberry32(seed) {
   let a = seed | 0;

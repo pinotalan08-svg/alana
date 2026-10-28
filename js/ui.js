@@ -1,151 +1,169 @@
 'use strict';
 
-const SETTINGS_KEY = 'abysses.settings.v1';
+const SETTINGS_KEY = 'abysses.settings.v2';
 
 const UI = {
-  settings: { sound: true, vibrate: true, view: '3d' },
-  modal: 'title', // name of the open screen, or null while playing
-  back: 'title', // where "Retour" goes from the help and score screens
-  popFor: null,
+  settings: { sound: true, vibrate: true, quality: 'high' },
+  screen: 'title', // the open full-screen panel, or null while playing
+  back: 'title', // where the help screen returns to
+  choice: null,
+  last: {}, // last values written to the HUD, to avoid needless DOM writes
   bannerTimer: 0,
-  saveTimer: 0,
+  toastTimer: 0,
 };
 
 const $ = (id) => document.getElementById(id);
+const isPaused = () => UI.screen !== null || !$('confirm').hidden;
+const inRun = () => !!(Run && Ch && !Ch.over);
+
+function glyphImg(glyph, color, size = 96, plain = false, alt = '') {
+  const img = document.createElement('img');
+  img.src = emblemURL(glyph, color, size, plain);
+  img.alt = alt;
+  return img;
+}
+
+function boonEmblem(id, size = 96) {
+  const A = ANCIENTS[BOONS[id].anc];
+  return glyphImg(A.glyph, A.color, size, false, BOONS[id].name);
+}
 
 function initUI() {
   UI.settings = { ...UI.settings, ...store.get(SETTINGS_KEY, {}) };
   Sfx.on = UI.settings.sound;
-  document.querySelectorAll('img[data-icon]').forEach((img) => (img.src = spriteURL(img.dataset.icon)));
-  buildInventory();
-  if (!V3.ok) {
-    // no WebGL (or three.js failed to load): the top-down view is the only one
-    $('btn-view').hidden = true;
-    $('btn-view-title').hidden = true;
-  }
-  applyViewMode();
+  document.querySelectorAll('img[data-glyph]').forEach((img) => {
+    img.src = emblemURL(img.dataset.glyph, img.dataset.color || '#f1e6d0', 96, true);
+  });
+  $('shop-emblem').src = emblemURL('coin', '#f7c948', 160);
   refreshToggles();
 
-  $('btn-menu').onclick = openPause;
-  $('btn-act').onclick = actionButton;
-  $('pop-use').onclick = () => {
-    const id = UI.popFor;
-    closePop();
-    doUse(id);
-  };
-  $('btn-continue').onclick = continueRun;
-  $('btn-new').onclick = () => {
-    if (peekSave()) askConfirm('Une partie est en cours. La remplacer par une nouvelle ?', 'Nouvelle partie', startNewRun);
-    else startNewRun();
+  $('btn-play').onclick = openHub;
+  $('btn-continue').onclick = () => {
+    if (resumeRun()) startPlaying();
   };
   $('btn-help').onclick = () => showScreen('help', 'title');
   $('btn-help2').onclick = () => showScreen('help', 'pause');
-  $('btn-scores').onclick = () => {
-    renderScores();
-    showScreen('scores', 'title');
-  };
   document.querySelectorAll('[data-back]').forEach((b) => (b.onclick = () => showScreen(UI.back)));
-  $('btn-resume').onclick = () => showScreen(null);
-  $('btn-view').onclick = toggleView;
-  $('btn-view-title').onclick = toggleView;
-  $('btn-sound').onclick = toggleSound;
   $('btn-sound-title').onclick = toggleSound;
+  $('btn-sound').onclick = toggleSound;
   $('btn-vibrate').onclick = toggleVibrate;
-  $('btn-quit').onclick = () => {
-    saveGame();
-    showTitle();
+  $('btn-quality').onclick = toggleQuality;
+  $('btn-pause').onclick = openPause;
+  $('btn-resume').onclick = () => showScreen(null);
+  $('btn-abandon').onclick = () => askConfirm('Abandonner la descente ? Tes éclats d’âme restent acquis.', 'Abandonner', () => {
+    showScreen(null);
+    endRun(false);
+  });
+  $('btn-descend').onclick = () => {
+    startRun();
+    startPlaying();
   };
-  $('btn-abandon').onclick = () =>
-    askConfirm('Abandonner ? La partie sera perdue et comptera comme une défaite.', 'Abandonner', abandonRun);
-  $('btn-again').onclick = startNewRun;
-  $('btn-title').onclick = showTitle;
+  $('btn-hub-title').onclick = showTitle;
+  $('btn-shop-leave').onclick = () => showScreen(null);
+  $('btn-end').onclick = openHub;
   $('confirm-no').onclick = closeConfirm;
   document.addEventListener('click', (e) => {
     if (e.target.closest('button')) Sfx.play('click');
   });
 
-  Bus.on('turn', () => {
-    updateHUD();
-    renderLog();
-    scheduleSave();
-  });
-  Bus.on('log', renderLog);
-  Bus.on('floor', () => {
-    updateHUD();
-    if (S.floor === MAX_FLOOR) banner(`Étage ${S.floor}`, 'Le Repaire du Wyrm', 'boss');
-    else banner(`Étage ${S.floor}`, THEMES[S.theme].name);
-    scheduleSave();
-  });
-  Bus.on('levelup', () => banner('Ta puissance grandit', `Niveau ${S.player.lvl}`, 'gold'));
-  Bus.on('boss', () => banner('Le gardien des Abysses', 'Vorgath, le Wyrm', 'boss'));
-  // permadeath: drop the save at once, so closing the app during the death animation cannot undo it
-  Bus.on('death', () => {
-    clearSave();
-    setTimeout(showEnd, 1400);
-  });
-  Bus.on('victory', () => {
-    clearSave();
-    setTimeout(showEnd, 2200);
+  Bus.on('chamber', onChamber);
+  Bus.on('cleared', () => banner('', 'Salle conquise', 'short'));
+  Bus.on('doors', () => toast('Les portes s’ouvrent'));
+  Bus.on('boon', (b) => toast(BOONS[b.id].name, ANCIENTS[BOONS[b.id].anc].color));
+  Bus.on('choose', openChoice);
+  Bus.on('shop', openShop);
+  Bus.on('runEnd', showEnd);
+  Bus.on('defiance', () => banner('La mort attendra', 'Sursis'));
+  Bus.on('fountain', (n) => toast(`La fontaine te rend ${n} PV`, '#7cd8ff'));
+  Bus.on('noAmmo', () => toast('Ton éclat est au sol : va le ramasser'));
+  Bus.on('dodged', () => toast('Esquivé !', '#a6ec7e'));
+  Bus.on('toast', toast);
+  Bus.on('bossDown', (e) => banner('Gardien vaincu', e.def.name, 'boss'));
+  Bus.on('hurt', () => {
+    const v = $('vignette');
+    v.classList.add('on');
+    requestAnimationFrame(() => requestAnimationFrame(() => v.classList.remove('on')));
   });
 }
 
-// ---- HUD -------------------------------------------------------------------------------------
-
-function setIcon(img, name) {
-  if (img.dataset.icon === name) return;
-  img.dataset.icon = name;
-  img.src = spriteURL(name);
+function startPlaying() {
+  Sfx.unlock();
+  showScreen(null);
 }
 
-function updateHUD() {
-  if (!S) return;
-  const p = S.player;
-  const ratio = p.hp / p.maxHp;
-  $('hp-fill').style.width = `${ratio * 100}%`;
-  $('hp-text').textContent = `${p.hp} / ${p.maxHp}`;
-  const meter = $('hp-meter');
-  meter.classList.toggle('low', ratio <= 0.3);
-  meter.setAttribute('aria-valuenow', p.hp);
-  meter.setAttribute('aria-valuemin', 0);
-  meter.setAttribute('aria-valuemax', p.maxHp);
-  $('atk').textContent = playerAtk();
-  $('def').textContent = playerDef();
-  $('lvl').textContent = `Niv. ${p.lvl}`;
-  $('xp-fill').style.width = `${(p.xp / xpNext(p.lvl)) * 100}%`;
-  $('depth').textContent = `Étage ${S.floor}/${MAX_FLOOR}`;
-  $('gold').textContent = p.gold;
-
-  for (const b of $('inv').children) {
-    const n = S.inv[b.dataset.id] || 0;
-    b.classList.toggle('empty', !n);
-    b.querySelector('.count').textContent = n > 1 ? n : '';
-    b.setAttribute('aria-label', `${CONSUMABLES[b.dataset.id].name} : ${n}`);
+function onChamber() {
+  const biome = BIOMES[Ch.biome];
+  UI.last = {};
+  $('attack-icon').src = emblemURL(Run.weapon === 'bow' ? 'bow' : 'sword', '#f1e6d0', 96, true);
+  renderBoonsHud();
+  if (Ch.kind === 'boss') {
+    const d = ENEMIES[biome.boss];
+    banner(d.title, d.name, 'boss');
+  } else if (Ch.kind === 'rest') {
+    banner('Un moment de répit', 'Halte');
+  } else if (Ch.step === 0) {
+    banner(`Profondeur ${Ch.biome + 1}`, biome.name);
   }
-  if (UI.popFor) fillPop(UI.popFor);
-
-  const stairs = onStairs() && !isOver();
-  $('btn-act').classList.toggle('stairs', stairs);
-  $('act-label').textContent = stairs ? 'Descendre' : 'Attendre';
-  setIcon($('act-icon'), stairs ? 'stairs' : 'hourglass');
-
-  const boss = S.monsters.find((m) => MONSTERS[m.type].boss);
-  $('boss').hidden = !(boss && S.bossSeen);
-  if (boss) $('boss-fill').style.width = `${(boss.hp / boss.maxHp) * 100}%`;
 }
 
-function renderLog() {
-  const ol = $('log');
-  ol.textContent = '';
-  if (!S) return;
-  for (const e of S.log.slice(-4)) {
-    const age = S.turn - e.turn;
-    if (age > 6) continue;
-    const li = document.createElement('li');
-    li.textContent = e.text;
-    if (e.kind) li.className = e.kind;
-    li.style.opacity = age <= 1 ? 1 : age <= 3 ? 0.7 : 0.4;
-    ol.appendChild(li);
+// ---- HUD ----------------------------------------------------------------------------------------
+
+function setText(id, value) {
+  if (UI.last[id] === value) return false;
+  UI.last[id] = value;
+  $(id).textContent = value;
+  return true;
+}
+
+function updateHud() {
+  if (!inRun()) return;
+  const P = Ch.player;
+  if (setText('hp-text', `${Math.max(0, Run.hp)} / ${Run.maxHp}`)) {
+    const r = Math.max(0, Run.hp) / Run.maxHp;
+    $('hp-fill').style.width = `${r * 100}%`;
+    $('hp-meter').classList.toggle('low', r <= 0.3);
   }
+  setText('gold', String(Run.gold));
+  setText('shards', String(Meta.shards));
+  if (UI.last.defiance !== Run.defiance) {
+    UI.last.defiance = Run.defiance;
+    const box = $('defiance');
+    box.textContent = '';
+    for (let i = 0; i < Run.defiance; i++) box.append(glyphImg('ankh', '#ffd98a', 64, true, 'Sursis'));
+  }
+  const pips = `${P.dashes}/${P.dashMax}`;
+  if (UI.last.pips !== pips) {
+    UI.last.pips = pips;
+    const box = $('dash-pips');
+    box.textContent = '';
+    for (let i = 0; i < P.dashMax; i++) {
+      const pip = document.createElement('i');
+      if (i >= P.dashes) pip.className = 'off';
+      box.append(pip);
+    }
+  }
+  setText('cast-ammo', String(P.castAmmo));
+  document.querySelector('.act-cast').classList.toggle('empty', P.castAmmo === 0);
+  const where = Ch.kind === 'boss' ? 'Gardien' : Ch.kind === 'rest' ? 'Halte' : `Salle ${Ch.step + 1} / ${ROOMS_PER_BIOME}`;
+  setText('where-biome', BIOMES[Ch.biome].name);
+  setText('where-room', where);
+  const boss = Ch.boss;
+  const showBoss = !!boss && boss.alive && boss.spawnT <= 0;
+  $('bossbar').hidden = !showBoss;
+  if (showBoss) {
+    setText('boss-name', boss.def.name);
+    const w = `${(boss.hp / boss.maxHp) * 100}%`;
+    if (UI.last.bossW !== w) {
+      UI.last.bossW = w;
+      $('boss-fill').style.width = w;
+    }
+  }
+}
+
+function renderBoonsHud() {
+  const box = $('boons');
+  box.textContent = '';
+  for (const b of Run.boons) box.append(boonEmblem(b.id, 64));
 }
 
 function banner(sub, main, cls = '') {
@@ -154,196 +172,254 @@ function banner(sub, main, cls = '') {
   const b = $('banner');
   b.className = `show ${cls}`;
   clearTimeout(UI.bannerTimer);
-  UI.bannerTimer = setTimeout(() => (b.className = cls), 2000);
+  UI.bannerTimer = setTimeout(() => (b.className = cls), cls === 'short' ? 1100 : 2200);
 }
 
-function scheduleSave() {
-  clearTimeout(UI.saveTimer);
-  UI.saveTimer = setTimeout(saveGame, 250);
+function toast(text, color = '#f1e6d0') {
+  const t = $('toast');
+  t.textContent = text;
+  t.style.color = color;
+  t.classList.add('show');
+  clearTimeout(UI.toastTimer);
+  UI.toastTimer = setTimeout(() => t.classList.remove('show'), 1700);
 }
 
-// ---- Satchel ---------------------------------------------------------------------------------
-
-function buildInventory() {
-  const inv = $('inv');
-  for (const id of INV_ORDER) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'slot empty';
-    b.dataset.id = id;
-    const img = document.createElement('img');
-    img.alt = '';
-    img.src = spriteURL(CONSUMABLES[id].spr);
-    const count = document.createElement('span');
-    count.className = 'count';
-    b.append(img, count);
-    b.addEventListener('click', () => togglePop(id, b));
-    inv.appendChild(b);
-  }
-}
-
-function fillPop(id) {
-  const def = CONSUMABLES[id], n = (S && S.inv[id]) || 0;
-  $('pop-icon').src = spriteURL(def.spr);
-  $('pop-name').textContent = def.name;
-  $('pop-count').textContent = n ? `Tu en as ${n}` : 'Tu n’en as aucun';
-  $('pop-desc').textContent = def.desc;
-  $('pop-use').disabled = !n;
-}
-
-function togglePop(id, btn) {
-  if (!canAct()) return;
-  if (UI.popFor === id) return closePop();
-  UI.popFor = id;
-  fillPop(id);
-  const pop = $('pop');
-  pop.hidden = false;
-  const sr = $('stage').getBoundingClientRect(), br = btn.getBoundingClientRect();
-  const left = clamp(br.left + br.width / 2 - sr.left - pop.offsetWidth / 2, 12, sr.width - pop.offsetWidth - 12);
-  pop.style.left = `${left}px`;
-  for (const s of $('inv').children) s.classList.toggle('open', s === btn);
-}
-
-function closePop() {
-  if (!UI.popFor) return;
-  UI.popFor = null;
-  $('pop').hidden = true;
-  for (const s of $('inv').children) s.classList.remove('open');
-}
-
-function actionButton() {
-  if (!canAct()) return;
-  closePop();
-  if (onStairs()) doDescend();
-  else doWait(false);
-}
-
-// ---- Screens ---------------------------------------------------------------------------------
+// ---- Screens ------------------------------------------------------------------------------------
 
 function showScreen(name, back) {
   if (back) UI.back = back;
   document.querySelectorAll('.screen').forEach((s) => (s.hidden = s.id !== `scr-${name}`));
-  UI.modal = name || null;
-  closePop();
-  View.lastDraw = 0;
+  UI.screen = name || null;
+  const overlayOnRun = name === null || name === 'pause' || name === 'choice' || name === 'shop' || (name === 'help' && UI.back === 'pause');
+  $('hud').hidden = !(inRun() && overlayOnRun);
+  $('controls').hidden = !(inRun() && name === null);
+  Input.reset();
+  if (name === null) renderBoonsHud();
 }
 
 function showTitle() {
-  const save = peekSave();
-  const c = $('btn-continue');
-  c.hidden = !save;
-  if (save) c.textContent = `Continuer · étage ${save.floor}, niv. ${save.lvl}`;
-  $('btn-new').classList.toggle('primary', !save);
+  $('btn-continue').hidden = !peekRun();
+  $('btn-play').classList.toggle('primary', !peekRun());
   showScreen('title');
 }
 
-function drawTitle(time) {
-  const c = $('title-art');
-  const w = Math.round(c.clientWidth * View.dpr), h = Math.round(c.clientHeight * View.dpr);
-  if (!w || !h) return;
-  if (c.width !== w || c.height !== h) {
-    c.width = w;
-    c.height = h;
+function openHub() {
+  $('hub-shards').textContent = Meta.shards;
+  const wbox = $('hub-weapons');
+  wbox.textContent = '';
+  for (const id of ['sword', 'bow']) {
+    const w = WEAPONS[id], locked = id === 'bow' && !Meta.bow;
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = `weapon${Meta.weapon === id && !locked ? ' on' : ''}`;
+    card.append(glyphImg(id, locked ? '#6a5a60' : '#ffd98a', 96, true));
+    const name = document.createElement('strong');
+    name.textContent = w.name;
+    const desc = document.createElement('span');
+    desc.textContent = locked ? `Débloquer : ${w.cost} éclats` : w.desc;
+    card.append(name, desc);
+    card.disabled = locked && Meta.shards < w.cost;
+    card.onclick = () => {
+      if (locked) unlockBow();
+      else {
+        Meta.weapon = id;
+        saveMeta();
+      }
+      openHub();
+    };
+    wbox.append(card);
   }
-  drawTitleArt(c, time);
+  const ubox = $('hub-upgrades');
+  ubox.textContent = '';
+  for (const u of UPGRADES) {
+    const lvl = upgradeLevel(u.id), cost = u.costs[lvl];
+    const row = document.createElement('div');
+    row.className = 'upgrade';
+    const name = document.createElement('strong');
+    name.textContent = u.name;
+    const p = document.createElement('p');
+    p.textContent = u.text;
+    const levels = document.createElement('div');
+    levels.className = 'levels';
+    for (let i = 0; i < u.costs.length; i++) {
+      const pip = document.createElement('i');
+      if (i < lvl) pip.className = 'on';
+      levels.append(pip);
+    }
+    const buy = document.createElement('button');
+    buy.type = 'button';
+    if (cost === undefined) {
+      buy.textContent = 'Max';
+      buy.disabled = true;
+    } else {
+      buy.append(glyphImg('shard', '#c9a8ff', 48, true), document.createTextNode(String(cost)));
+      buy.disabled = Meta.shards < cost;
+      buy.setAttribute('aria-label', `${u.name} : acheter pour ${cost} éclats`);
+      buy.onclick = () => {
+        if (buyUpgrade(u.id)) Sfx.play('boon');
+        openHub();
+      };
+    }
+    row.append(name, p, levels, buy);
+    ubox.append(row);
+  }
+  $('hub-stats').textContent = Meta.runs
+    ? `${Meta.runs} descente${Meta.runs > 1 ? 's' : ''} · ${Meta.wins} victoire${Meta.wins > 1 ? 's' : ''} · record : salle ${Meta.bestRoom} sur ${TOTAL_ROOMS}`
+    : 'Ta première descente t’attend.';
+  showScreen('hub');
 }
 
-function startNewRun() {
-  closeConfirm();
-  stopAuto();
-  clearSave();
-  newRun();
-  showScreen(null);
-  updateHUD();
-  renderLog();
-  saveGame();
+function boonCard(opt, kind) {
+  const def = BOONS[opt.id], rarity = RARITIES[opt.rarity];
+  const card = document.createElement('button');
+  card.type = 'button';
+  card.className = 'card';
+  card.style.setProperty('--rarity', rarity.color);
+  card.append(boonEmblem(opt.id));
+  const tags = document.createElement('div');
+  tags.className = 'tags';
+  const r = document.createElement('span');
+  r.textContent = kind === 'fruit' ? `Niveau ${opt.level} → ${opt.level + 1}` : def.fixed ? 'Unique' : rarity.name;
+  const s = document.createElement('span');
+  s.textContent = SLOT_NAMES[def.slot];
+  tags.append(r, s);
+  const name = document.createElement('strong');
+  name.textContent = def.name;
+  const p = document.createElement('p');
+  p.textContent = boonText(kind === 'fruit' ? { ...opt, level: opt.level + 1 } : opt);
+  card.append(tags, name, p);
+  if (opt.replaces) {
+    const rep = document.createElement('span');
+    rep.className = 'replace';
+    rep.textContent = `Remplace : ${BOONS[opt.replaces.id].name}`;
+    card.append(rep);
+  }
+  return card;
 }
 
-function continueRun() {
-  stopAuto();
-  if (!loadGame()) return startNewRun();
-  showScreen(null);
-  updateHUD();
-  renderLog();
+function openChoice(choice) {
+  UI.choice = choice;
+  if (choice.kind === 'boon') {
+    const A = ANCIENTS[choice.anc];
+    $('choice-emblem').src = emblemURL(A.glyph, A.color, 160);
+    $('choice-title').textContent = A.name;
+    $('choice-line').textContent = `« ${A.line} »`;
+  } else {
+    $('choice-emblem').src = emblemURL('fruit', '#ff9b3a', 160);
+    $('choice-title').textContent = 'Fruit d’ambre';
+    $('choice-line').textContent = 'Choisis la bénédiction à renforcer.';
+  }
+  const box = $('choice-cards');
+  box.textContent = '';
+  for (const opt of choice.options) {
+    const card = boonCard(opt, choice.kind);
+    // a short guard so a thumb still pressing an attack cannot pick a card by accident
+    card.disabled = true;
+    setTimeout(() => (card.disabled = false), 450);
+    card.onclick = () => {
+      chooseOption(choice, opt);
+      Sfx.play('boon');
+      buzz(25);
+      if (choice.fromShop) openShop();
+      else showScreen(null);
+    };
+    box.append(card);
+  }
+  Sfx.play('reward');
+  showScreen('choice');
+}
+
+function openShop() {
+  if (!inRun() || !Ch.shop) return;
+  $('shop-gold').textContent = Run.gold;
+  const box = $('shop-cards');
+  box.textContent = '';
+  for (const item of Ch.shop) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'card';
+    card.style.setProperty('--rarity', item.color);
+    card.append(glyphImg(item.glyph, item.color));
+    const tags = document.createElement('div');
+    tags.className = 'tags';
+    const cost = document.createElement('span');
+    cost.className = 'cost';
+    cost.textContent = item.sold ? 'Vendu' : `${item.cost} or`;
+    tags.append(cost);
+    const name = document.createElement('strong');
+    name.textContent = item.name;
+    const p = document.createElement('p');
+    p.textContent = item.text;
+    card.append(tags, name, p);
+    card.disabled = item.sold || Run.gold < item.cost;
+    card.onclick = () => {
+      const follow = buyItem(item);
+      Sfx.play('buy');
+      if (follow) openChoice(follow);
+      else openShop();
+    };
+    box.append(card);
+  }
+  showScreen('shop');
 }
 
 function openPause() {
-  if (!canAct()) return;
-  stopAuto();
-  const p = S.player;
-  const weapon = p.weapon >= 0 ? `${WEAPONS[p.weapon].name} (+${WEAPONS[p.weapon].atk})` : 'mains nues';
-  const armor = p.armor >= 0 ? `${ARMORS[p.armor].name} (+${ARMORS[p.armor].def})` : 'aucune armure';
-  $('pause-info').textContent = `Étage ${S.floor} · ${weapon} · ${armor} · ${p.kills} ennemis vaincus`;
+  if (!inRun() || UI.screen) return;
+  $('pause-info').textContent = `${BIOMES[Ch.biome].name} · salle ${Run.room + 1} sur ${TOTAL_ROOMS} · ${Run.kills} ennemis vaincus`;
+  const box = $('pause-boons');
+  box.textContent = '';
+  if (!Run.boons.length) {
+    const none = document.createElement('p');
+    none.className = 'none';
+    none.textContent = 'Aucune bénédiction pour l’instant.';
+    box.append(none);
+  }
+  for (const b of Run.boons) {
+    const item = document.createElement('div');
+    item.className = 'item';
+    const name = document.createElement('strong');
+    name.textContent = `${BOONS[b.id].name} · ${SLOT_NAMES[BOONS[b.id].slot]}${b.level > 1 ? ` · niv. ${b.level}` : ''}`;
+    name.style.color = RARITIES[b.rarity].color;
+    const p = document.createElement('p');
+    p.textContent = boonText(b);
+    item.append(boonEmblem(b.id, 64), name, p);
+    box.append(item);
+  }
   showScreen('pause', 'pause');
 }
 
-function abandonRun() {
-  S.dead = true;
-  S.cause = 'abandon';
-  showEnd();
+function formatTime(s) {
+  const m = Math.floor(s / 60), r = Math.floor(s % 60);
+  return `${m} min ${String(r).padStart(2, '0')} s`;
 }
 
-function showEnd() {
-  if (!S) return;
-  const { score, rank } = recordScore();
-  clearSave();
-  const p = S.player;
+function showEnd(won) {
   const title = $('end-title');
-  title.textContent = S.won ? 'Victoire !' : 'La torche s’éteint';
-  title.classList.toggle('won', S.won);
-  $('end-cause').textContent = S.won
-    ? `Vorgath est tombé. Tu remontes des Abysses après ${S.turn} tours.`
-    : S.cause === 'abandon'
-      ? `Tu rebrousses chemin à l’étage ${S.floor}.`
-      : `${cap(S.cause)} a eu raison de toi à l’étage ${S.floor}.`;
+  title.textContent = won ? 'Victoire' : 'Fin de la descente';
+  title.classList.toggle('won', won);
+  $('end-line').textContent = won
+    ? 'Vorgath s’effondre. Les Abysses se taisent, pour un temps.'
+    : `${Ch.kind === 'boss' ? `Face à ${ENEMIES[BIOMES[Ch.biome].boss].name}` : Ch.kind === 'rest' ? `${BIOMES[Ch.biome].name}, à la halte` : `${BIOMES[Ch.biome].name}, salle ${Ch.step + 1}`} : les Abysses ont eu le dernier mot. Pas pour longtemps.`;
   const dl = $('end-stats');
   dl.textContent = '';
-  const rows = [...score.parts, ['Niveau atteint', p.lvl], ['Tours joués', S.turn]];
-  for (const [label, value] of rows) {
+  const rows = [
+    ['Salle atteinte', `${Run.room + 1} sur ${TOTAL_ROOMS}`],
+    ['Ennemis vaincus', Run.kills],
+    ['Durée', formatTime(Run.time)],
+    ['Éclats d’âme gagnés', Run.shards],
+  ];
+  for (const [k, v] of rows) {
     const dt = document.createElement('dt');
-    dt.textContent = label;
+    dt.textContent = k;
     const dd = document.createElement('dd');
-    dd.textContent = value;
+    dd.textContent = v;
     dl.append(dt, dd);
   }
-  $('end-score').textContent = score.total;
-  $('end-record').hidden = rank !== 0;
+  const strip = $('end-boons');
+  strip.textContent = '';
+  for (const b of Run.boons) strip.append(boonEmblem(b.id, 64));
+  Sfx.play(won ? 'victory' : 'gameover');
   showScreen('end');
-}
-
-function renderScores() {
-  const list = store.get(SCORES_KEY, []);
-  const ol = $('scores-list');
-  ol.textContent = '';
-  if (!list.length) {
-    const li = document.createElement('li');
-    li.className = 'empty';
-    li.textContent = 'Aucune partie terminée pour l’instant. La première ligne t’attend.';
-    ol.appendChild(li);
-    return;
-  }
-  list.forEach((s, i) => {
-    const li = document.createElement('li');
-    const rank = document.createElement('span');
-    rank.className = 'rank';
-    rank.textContent = i + 1;
-    const icon = document.createElement('img');
-    icon.alt = s.won ? 'Victoire' : 'Défaite';
-    icon.src = spriteURL(s.won ? 'crown' : 'skull');
-    const detail = document.createElement('span');
-    detail.className = 'detail';
-    let date = s.date;
-    try {
-      date = new Date(s.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
-    } catch {
-      /* keep ISO date */
-    }
-    detail.textContent = `Étage ${s.floor} · niv. ${s.lvl} · ${date}`;
-    const score = document.createElement('strong');
-    score.textContent = s.score;
-    li.append(rank, icon, detail, score);
-    ol.appendChild(li);
-  });
 }
 
 function askConfirm(text, okLabel, onOk) {
@@ -361,46 +437,34 @@ function closeConfirm() {
   $('confirm').hidden = true;
 }
 
+function saveSettings() {
+  store.set(SETTINGS_KEY, UI.settings);
+  refreshToggles();
+}
+
 function toggleSound() {
   UI.settings.sound = !UI.settings.sound;
   Sfx.on = UI.settings.sound;
-  store.set(SETTINGS_KEY, UI.settings);
-  refreshToggles();
+  Sfx.unlock();
+  saveSettings();
 }
 
 function toggleVibrate() {
   UI.settings.vibrate = !UI.settings.vibrate;
-  store.set(SETTINGS_KEY, UI.settings);
-  refreshToggles();
+  saveSettings();
   buzz(30);
 }
 
-function applyViewMode() {
-  V3.active = V3.ok && UI.settings.view !== '2d';
-  $('view3d').hidden = !V3.active;
-  V3.dirty = true;
-  V3.lastDraw = 0;
-  View.lastDraw = 0;
-  View.snap = true;
-  if (S) {
-    V3.px = S.player.x;
-    V3.py = S.player.y;
-  }
-}
-
-function toggleView() {
-  UI.settings.view = UI.settings.view === '2d' ? '3d' : '2d';
-  store.set(SETTINGS_KEY, UI.settings);
-  applyViewMode();
-  refreshToggles();
+function toggleQuality() {
+  UI.settings.quality = UI.settings.quality === 'high' ? 'low' : 'high';
+  if (SC.ok) setQuality(UI.settings.quality);
+  saveSettings();
 }
 
 function refreshToggles() {
-  const view = `Vue : ${UI.settings.view === '2d' ? 'du dessus' : 'troisième personne'}`;
-  $('btn-view').textContent = view;
-  $('btn-view-title').textContent = view;
   const sound = `Son : ${UI.settings.sound ? 'activé' : 'coupé'}`;
   $('btn-sound').textContent = sound;
   $('btn-sound-title').textContent = sound;
   $('btn-vibrate').textContent = `Vibrations : ${UI.settings.vibrate ? 'activées' : 'coupées'}`;
+  $('btn-quality').textContent = `Graphismes : ${UI.settings.quality === 'high' ? 'élevés' : 'économes'}`;
 }

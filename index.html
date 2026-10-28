@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Abysses</title>
-<meta name="description" content="Un roguelike de poche : dix étages, un Wyrm, une seule vie.">
-<meta name="theme-color" content="#1b1722">
+<meta name="description" content="Un roguelike d’action pour téléphone : traverse les Abysses salle après salle, choisis tes bénédictions et terrasse Vorgath le Wyrm.">
+<meta name="theme-color" content="#0b0709">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -15,103 +15,113 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jacquard+12&family=Jersey+15&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;700;800&family=Marcellus+SC&display=swap">
 <link rel="stylesheet" href="css/style.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
 <!-- app:start -->
 <div id="app">
-  <header id="hud">
-    <div class="hud-top">
+  <canvas id="gl" aria-label="Les Abysses"></canvas>
+  <canvas id="fx" aria-hidden="true"></canvas>
+  <div id="vignette" aria-hidden="true"></div>
+
+  <header id="hud" hidden>
+    <div class="hud-left">
       <div class="hp" role="meter" aria-label="Points de vie" id="hp-meter">
-        <img class="ico" data-icon="heart" alt="">
-        <div class="track"><div class="fill" id="hp-fill"></div><span class="track-text" id="hp-text">24 / 24</span></div>
+        <div class="hp-fill" id="hp-fill"></div>
+        <span class="hp-text" id="hp-text">50 / 50</span>
       </div>
-      <div class="stat" title="Attaque"><img class="ico" data-icon="sword" alt="Attaque"><b id="atk">4</b></div>
-      <div class="stat" title="Défense"><img class="ico" data-icon="shield" alt="Défense"><b id="def">1</b></div>
-      <button class="icon-btn" id="btn-menu" type="button" aria-label="Pause"><span class="pause-glyph"></span></button>
+      <div class="hud-row">
+        <span class="defiance" id="defiance" title="Sursis"></span>
+        <span class="cur gold"><img data-glyph="coin" data-color="#f7c948" alt="Or"><b id="gold">0</b></span>
+        <span class="cur shard"><img data-glyph="shard" data-color="#c9a8ff" alt="Éclats d’âme"><b id="shards">0</b></span>
+      </div>
+      <div class="boons" id="boons"></div>
     </div>
-    <div class="hud-sub">
-      <span id="lvl">Niv. 1</span>
-      <div class="track xp" title="Expérience"><div class="fill" id="xp-fill"></div></div>
-      <span id="depth">Étage 1</span>
-      <span class="stat gold"><img class="ico" data-icon="gold" alt="Or"><b id="gold">0</b></span>
+    <div class="hud-right">
+      <div class="where"><span id="where-biome">Les Cryptes</span><span id="where-room">Salle 1</span></div>
+      <button class="round-btn" id="btn-pause" type="button" aria-label="Pause"><span class="pause-glyph"></span></button>
     </div>
   </header>
 
-  <main id="stage">
-    <canvas id="view3d" aria-hidden="true" hidden></canvas>
-    <canvas id="view" aria-label="Carte du donjon"></canvas>
-    <ol id="log" aria-live="polite"></ol>
-    <div id="banner" aria-live="polite"><small id="banner-sub"></small><strong id="banner-main"></strong></div>
-    <div id="boss" hidden>
-      <span>Vorgath, le Wyrm</span>
-      <div class="track"><div class="fill" id="boss-fill"></div></div>
-    </div>
-    <div id="pop" hidden>
-      <div class="pop-head">
-        <img id="pop-icon" alt="">
-        <div>
-          <strong id="pop-name"></strong>
-          <span id="pop-count"></span>
-        </div>
-      </div>
-      <p id="pop-desc"></p>
-      <button class="btn primary" id="pop-use" type="button">Utiliser</button>
-    </div>
-  </main>
+  <div id="bossbar" hidden>
+    <span id="boss-name"></span>
+    <div class="bar"><div class="bar-fill" id="boss-fill"></div></div>
+  </div>
+  <div id="banner" aria-live="polite"><small id="banner-sub"></small><strong id="banner-main"></strong></div>
+  <div id="toast" aria-live="polite"></div>
 
-  <footer id="dock">
-    <div id="inv"></div>
-    <button class="act" id="btn-act" type="button">
-      <img class="ico" id="act-icon" data-icon="hourglass" alt="">
-      <span id="act-label">Attendre</span>
-    </button>
-  </footer>
+  <div id="controls" hidden>
+    <div id="stick-zone">
+      <div id="stick"><div id="stick-knob"></div></div>
+    </div>
+    <div id="buttons">
+      <button class="act act-cast" data-act="cast" type="button" aria-label="Lancer l’éclat"><img data-glyph="shard" alt=""><span class="ammo" id="cast-ammo"></span></button>
+      <button class="act act-special" data-act="special" type="button" aria-label="Spécial"><img data-glyph="spin" alt=""></button>
+      <button class="act act-dash" data-act="dash" type="button" aria-label="Esquive"><img data-glyph="dash" alt=""><span class="pips" id="dash-pips"></span></button>
+      <button class="act act-attack" data-act="attack" type="button" aria-label="Attaque"><img data-glyph="sword" id="attack-icon" alt=""></button>
+    </div>
+  </div>
 
   <section class="screen" id="scr-title">
-    <div class="panel">
-      <canvas id="title-art" aria-hidden="true"></canvas>
+    <div class="title-wrap">
+      <p class="eyebrow">Un roguelike d’action</p>
       <h1 class="title-word">Abysses</h1>
-      <p class="tagline">Dix étages. Un Wyrm. Une seule vie.</p>
+      <p class="tagline">Trois profondeurs. Six Anciens. Un Wyrm qui t’attend tout au fond.</p>
+      <p class="warn" id="no-webgl" hidden>Ce navigateur ne sait pas afficher la 3D (WebGL), nécessaire pour jouer. Essaie avec Chrome ou Safari à jour.</p>
       <div class="menu">
-        <button class="btn primary" id="btn-continue" type="button" hidden>Continuer</button>
-        <button class="btn" id="btn-new" type="button">Nouvelle partie</button>
-        <button class="btn" id="btn-help" type="button">Comment jouer</button>
-        <button class="btn" id="btn-scores" type="button">Meilleurs scores</button>
+        <button class="btn primary" id="btn-continue" type="button" hidden>Reprendre la descente</button>
+        <button class="btn" id="btn-play" type="button">Entrer au Sanctuaire</button>
+        <button class="btn ghost" id="btn-help" type="button">Comment jouer</button>
       </div>
-      <div class="links">
-        <button class="link-btn" id="btn-view-title" type="button">Vue : troisième personne</button>
-        <button class="link-btn" id="btn-sound-title" type="button">Son : activé</button>
+      <button class="link-btn" id="btn-sound-title" type="button">Son : activé</button>
+    </div>
+  </section>
+
+  <section class="screen" id="scr-hub" hidden>
+    <div class="panel wide">
+      <header class="hub-head">
+        <h2>Le Sanctuaire</h2>
+        <p class="hub-sub">Dépense tes éclats d’âme. Ils restent acquis, même après la mort.</p>
+        <div class="hub-shards"><img data-glyph="shard" data-color="#c9a8ff" alt=""><b id="hub-shards">0</b><span>éclats d’âme</span></div>
+      </header>
+      <h3>Arme</h3>
+      <div class="weapons" id="hub-weapons"></div>
+      <h3>Pouvoirs permanents</h3>
+      <div class="upgrades" id="hub-upgrades"></div>
+      <p class="hub-stats" id="hub-stats"></p>
+      <div class="menu sticky">
+        <button class="btn primary" id="btn-descend" type="button">Descendre dans les Abysses</button>
+        <button class="link-btn" id="btn-hub-title" type="button">Écran titre</button>
       </div>
     </div>
   </section>
 
-  <section class="screen" id="scr-help" hidden>
+  <section class="screen" id="scr-choice" hidden>
     <div class="panel">
-      <h2>Comment jouer</h2>
-      <ul class="help">
-        <li><b>Touche une case</b> pour t’y rendre. Touche un monstre à côté de toi pour l’attaquer.</li>
-        <li><b>Glisse le doigt</b> pour faire un seul pas : vers le haut, c’est droit devant.</li>
-        <li>La <b>caméra</b> se place derrière toi et suit ton regard. Le menu Pause propose aussi une vue du dessus.</li>
-        <li><b>Marche sur les objets</b> pour les ramasser. Une arme ou une armure meilleure s’équipe toute seule.</li>
-        <li><b>Touche ta besace</b>, en bas, pour boire une potion ou lire un parchemin.</li>
-        <li><b>Attendre</b> passe un tour face aux ennemis, ou te fait te reposer quand la voie est libre.</li>
-        <li><b>Appui long</b> sur une case pour savoir ce qui s’y trouve.</li>
-        <li>Frappe un monstre <b>endormi</b> pour doubler les dégâts. Méfie-toi des coffres…</li>
-        <li>Trouve l’<b>escalier</b> à chaque étage. Au 10<sup>e</sup>, le Wyrm t’attend.</li>
-        <li>La mort est définitive, mais la partie est sauvegardée à chaque pas.</li>
-      </ul>
-      <button class="btn primary" data-back type="button">Compris</button>
+      <header class="choice-head">
+        <img id="choice-emblem" alt="">
+        <div>
+          <h2 id="choice-title"></h2>
+          <p id="choice-line"></p>
+        </div>
+      </header>
+      <div class="cards" id="choice-cards"></div>
     </div>
   </section>
 
-  <section class="screen" id="scr-scores" hidden>
+  <section class="screen" id="scr-shop" hidden>
     <div class="panel">
-      <h2>Meilleurs scores</h2>
-      <ol class="scores" id="scores-list"></ol>
-      <button class="btn primary" data-back type="button">Retour</button>
+      <header class="choice-head">
+        <img id="shop-emblem" alt="">
+        <div>
+          <h2>Le Marchand</h2>
+          <p>« Tout se paie, ici-bas. » Tu as <b id="shop-gold">0</b> or.</p>
+        </div>
+      </header>
+      <div class="cards" id="shop-cards"></div>
+      <button class="btn" id="btn-shop-leave" type="button">Partir</button>
     </div>
   </section>
 
@@ -119,32 +129,44 @@
     <div class="panel">
       <h2>Pause</h2>
       <p class="pause-info" id="pause-info"></p>
+      <div class="boon-list" id="pause-boons"></div>
       <div class="menu">
         <button class="btn primary" id="btn-resume" type="button">Reprendre</button>
-        <button class="btn" id="btn-view" type="button">Vue : troisième personne</button>
-        <button class="btn" id="btn-sound" type="button">Son : activé</button>
-        <button class="btn" id="btn-vibrate" type="button">Vibrations : activées</button>
-        <button class="btn" id="btn-help2" type="button">Comment jouer</button>
-        <button class="btn" id="btn-quit" type="button">Sauvegarder et quitter</button>
-        <button class="btn danger" id="btn-abandon" type="button">Abandonner la partie</button>
+        <div class="toggles">
+          <button class="btn small" id="btn-sound" type="button">Son : activé</button>
+          <button class="btn small" id="btn-vibrate" type="button">Vibrations : activées</button>
+          <button class="btn small" id="btn-quality" type="button">Graphismes : élevés</button>
+          <button class="btn small" id="btn-help2" type="button">Comment jouer</button>
+        </div>
+        <button class="btn danger" id="btn-abandon" type="button">Abandonner la descente</button>
       </div>
     </div>
   </section>
 
   <section class="screen" id="scr-end" hidden>
     <div class="panel">
-      <h2 class="end-title" id="end-title">Tu es mort</h2>
-      <p class="end-cause" id="end-cause"></p>
+      <h2 class="end-title" id="end-title">Fin de la descente</h2>
+      <p class="end-line" id="end-line"></p>
       <dl class="stats" id="end-stats"></dl>
-      <div class="score-box">
-        <span>Score</span>
-        <strong id="end-score">0</strong>
-        <em id="end-record" hidden>Nouveau record !</em>
-      </div>
-      <div class="menu">
-        <button class="btn primary" id="btn-again" type="button">Rejouer</button>
-        <button class="btn" id="btn-title" type="button">Écran titre</button>
-      </div>
+      <div class="boon-strip" id="end-boons"></div>
+      <button class="btn primary" id="btn-end" type="button">Retour au Sanctuaire</button>
+    </div>
+  </section>
+
+  <section class="screen" id="scr-help" hidden>
+    <div class="panel">
+      <h2>Comment jouer</h2>
+      <ul class="help">
+        <li><b>Joystick</b> : pose le pouce n’importe où sur la moitié gauche de l’écran pour te déplacer.</li>
+        <li><b>Attaque</b> : trois coups enchaînés. Garde le doigt appuyé pour frapper en continu.</li>
+        <li><b>Spécial</b> : un tourbillon qui frappe tout autour de toi et repousse.</li>
+        <li><b>Esquive</b> : tu es invulnérable pendant le bond. Attaque juste après pour un coup puissant.</li>
+        <li><b>Éclat</b> : lance ton cristal sur un ennemi, puis va le ramasser.</li>
+        <li>Les zones <b class="red">rouges au sol</b> annoncent les attaques ennemies : sors-en ou esquive au bon moment.</li>
+        <li>Chaque porte montre sa <b>récompense</b>. Les Anciens offrent des <b>bénédictions</b> : choisis-en une parmi trois.</li>
+        <li>La mort te ramène au <b>Sanctuaire</b>, où tes éclats d’âme achètent des pouvoirs permanents.</li>
+      </ul>
+      <button class="btn primary" data-back type="button">Compris</button>
     </div>
   </section>
 
@@ -161,11 +183,11 @@
 <!-- app:end -->
 <script src="js/util.js"></script>
 <script src="js/data.js"></script>
-<script src="js/sprites.js"></script>
-<script src="js/map.js"></script>
+<script src="js/gfx.js"></script>
+<script src="js/models.js"></script>
+<script src="js/room.js"></script>
 <script src="js/game.js"></script>
-<script src="js/render.js"></script>
-<script src="js/render3d.js"></script>
+<script src="js/scene.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/audio.js"></script>
 <script src="js/input.js"></script>
