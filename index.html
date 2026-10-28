@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Abysses</title>
+<meta name="description" content="Un roguelike de poche : dix étages, un Wyrm, une seule vie.">
+<meta name="theme-color" content="#1b1722">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Abysses">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jacquard+12&family=Jersey+15&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<!-- app:start -->
+<div id="app">
+  <header id="hud">
+    <div class="hud-top">
+      <div class="hp" role="meter" aria-label="Points de vie" id="hp-meter">
+        <img class="ico" data-icon="heart" alt="">
+        <div class="track"><div class="fill" id="hp-fill"></div><span class="track-text" id="hp-text">24 / 24</span></div>
+      </div>
+      <div class="stat" title="Attaque"><img class="ico" data-icon="sword" alt="Attaque"><b id="atk">4</b></div>
+      <div class="stat" title="Défense"><img class="ico" data-icon="shield" alt="Défense"><b id="def">1</b></div>
+      <button class="icon-btn" id="btn-menu" type="button" aria-label="Pause"><span class="pause-glyph"></span></button>
+    </div>
+    <div class="hud-sub">
+      <span id="lvl">Niv. 1</span>
+      <div class="track xp" title="Expérience"><div class="fill" id="xp-fill"></div></div>
+      <span id="depth">Étage 1</span>
+      <span class="stat gold"><img class="ico" data-icon="gold" alt="Or"><b id="gold">0</b></span>
+    </div>
+  </header>
+
+  <main id="stage">
+    <canvas id="view" aria-label="Carte du donjon"></canvas>
+    <ol id="log" aria-live="polite"></ol>
+    <div id="banner" aria-live="polite"><small id="banner-sub"></small><strong id="banner-main"></strong></div>
+    <div id="boss" hidden>
+      <span>Vorgath, le Wyrm</span>
+      <div class="track"><div class="fill" id="boss-fill"></div></div>
+    </div>
+    <div id="pop" hidden>
+      <div class="pop-head">
+        <img id="pop-icon" alt="">
+        <div>
+          <strong id="pop-name"></strong>
+          <span id="pop-count"></span>
+        </div>
+      </div>
+      <p id="pop-desc"></p>
+      <button class="btn primary" id="pop-use" type="button">Utiliser</button>
+    </div>
+  </main>
+
+  <footer id="dock">
+    <div id="inv"></div>
+    <button class="act" id="btn-act" type="button">
+      <img class="ico" id="act-icon" data-icon="hourglass" alt="">
+      <span id="act-label">Attendre</span>
+    </button>
+  </footer>
+
+  <section class="screen" id="scr-title">
+    <div class="panel">
+      <canvas id="title-art" aria-hidden="true"></canvas>
+      <h1 class="title-word">Abysses</h1>
+      <p class="tagline">Dix étages. Un Wyrm. Une seule vie.</p>
+      <div class="menu">
+        <button class="btn primary" id="btn-continue" type="button" hidden>Continuer</button>
+        <button class="btn" id="btn-new" type="button">Nouvelle partie</button>
+        <button class="btn" id="btn-help" type="button">Comment jouer</button>
+        <button class="btn" id="btn-scores" type="button">Meilleurs scores</button>
+      </div>
+      <button class="link-btn" id="btn-sound-title" type="button">Son : activé</button>
+    </div>
+  </section>
+
+  <section class="screen" id="scr-help" hidden>
+    <div class="panel">
+      <h2>Comment jouer</h2>
+      <ul class="help">
+        <li><b>Touche une case</b> pour t’y rendre. Touche un monstre à côté de toi pour l’attaquer.</li>
+        <li><b>Glisse le doigt</b> pour faire un seul pas, dans 8 directions.</li>
+        <li><b>Marche sur les objets</b> pour les ramasser. Une arme ou une armure meilleure s’équipe toute seule.</li>
+        <li><b>Touche ta besace</b>, en bas, pour boire une potion ou lire un parchemin.</li>
+        <li><b>Attendre</b> passe un tour face aux ennemis, ou te fait te reposer quand la voie est libre.</li>
+        <li><b>Appui long</b> sur une case pour savoir ce qui s’y trouve.</li>
+        <li>Frappe un monstre <b>endormi</b> pour doubler les dégâts. Méfie-toi des coffres…</li>
+        <li>Trouve l’<b>escalier</b> à chaque étage. Au 10<sup>e</sup>, le Wyrm t’attend.</li>
+        <li>La mort est définitive, mais la partie est sauvegardée à chaque pas.</li>
+      </ul>
+      <button class="btn primary" data-back type="button">Compris</button>
+    </div>
+  </section>
+
+  <section class="screen" id="scr-scores" hidden>
+    <div class="panel">
+      <h2>Meilleurs scores</h2>
+      <ol class="scores" id="scores-list"></ol>
+      <button class="btn primary" data-back type="button">Retour</button>
+    </div>
+  </section>
+
+  <section class="screen" id="scr-pause" hidden>
+    <div class="panel">
+      <h2>Pause</h2>
+      <p class="pause-info" id="pause-info"></p>
+      <div class="menu">
+        <button class="btn primary" id="btn-resume" type="button">Reprendre</button>
+        <button class="btn" id="btn-sound" type="button">Son : activé</button>
+        <button class="btn" id="btn-vibrate" type="button">Vibrations : activées</button>
+        <button class="btn" id="btn-help2" type="button">Comment jouer</button>
+        <button class="btn" id="btn-quit" type="button">Sauvegarder et quitter</button>
+        <button class="btn danger" id="btn-abandon" type="button">Abandonner la partie</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="screen" id="scr-end" hidden>
+    <div class="panel">
+      <h2 class="end-title" id="end-title">Tu es mort</h2>
+      <p class="end-cause" id="end-cause"></p>
+      <dl class="stats" id="end-stats"></dl>
+      <div class="score-box">
+        <span>Score</span>
+        <strong id="end-score">0</strong>
+        <em id="end-record" hidden>Nouveau record !</em>
+      </div>
+      <div class="menu">
+        <button class="btn primary" id="btn-again" type="button">Rejouer</button>
+        <button class="btn" id="btn-title" type="button">Écran titre</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="confirm" id="confirm" hidden role="dialog" aria-modal="true" aria-labelledby="confirm-text">
+    <div class="panel">
+      <p id="confirm-text"></p>
+      <div class="menu row">
+        <button class="btn" id="confirm-no" type="button">Annuler</button>
+        <button class="btn danger" id="confirm-yes" type="button">Confirmer</button>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- app:end -->
+<script src="js/util.js"></script>
+<script src="js/data.js"></script>
+<script src="js/sprites.js"></script>
+<script src="js/map.js"></script>
+<script src="js/game.js"></script>
+<script src="js/render.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/input.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
