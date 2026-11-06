@@ -1,15 +1,113 @@
 'use strict';
 
-// Procedural low-poly models: cel-shaded materials with an inked outline (inverted hull).
-// Every model faces +Z. Builders return { root, rig, mats } where `rig` holds the pivots the
-// animation code moves and `mats` the materials that flash white when hit.
+// Procedural 3D models. Each model is assembled from many small primitives, then merged per
+// pivot and material so a detailed character costs only a handful of draw calls. Characters
+// use cel shading with a rim light, an inked outline (vertices pushed along their normals) and
+// a dissolve effect for spawning and dying. Every model faces +Z.
 
-const Models = { gradient: null, outline: null, glowTex: null, ready: false };
+const Models = { ready: false, gradient: null, glowTex: null, grime: null, props: null };
+
+const GEO = {
+  sphere: (r, w = 16, h = 12) => new THREE.SphereGeometry(r, w, h),
+  dome: (r, w = 16, h = 8) => new THREE.SphereGeometry(r, w, h, 0, Math.PI * 2, 0, Math.PI / 2),
+  cyl: (rt, rb, h, s = 12, open = false) => new THREE.CylinderGeometry(rt, rb, h, s, 1, open),
+  box: (x, y, z) => new THREE.BoxGeometry(x, y, z),
+  cone: (r, h, s = 10) => new THREE.ConeGeometry(r, h, s),
+  torus: (r, t, rs = 8, ts = 24, arc = Math.PI * 2) => new THREE.TorusGeometry(r, t, rs, ts, arc),
+  lathe: (pts, s = 20) => new THREE.LatheGeometry(pts.map(([x, y]) => new THREE.Vector2(x, y)), s),
+  tube: (pts, r, segs = 20, rs = 6) => new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p))), segs, r, rs, false),
+  ico: (r, d = 1) => new THREE.IcosahedronGeometry(r, d),
+  extrude: (shape, depth, bevel = 0.01) => new THREE.ExtrudeGeometry(shape, {
+    depth, bevelEnabled: bevel > 0, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 2, curveSegments: 10,
+  }),
+};
+
+// ---- Shader injections ----------------------------------------------------------------------------
+
+const NOISE_GLSL = `
+  float hash3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+  float noise3(vec3 x) {
+    vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash3(i), hash3(i + vec3(1,0,0)), f.x), mix(hash3(i + vec3(0,1,0)), hash3(i + vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash3(i + vec3(0,0,1)), hash3(i + vec3(1,0,1)), f.x), mix(hash3(i + vec3(0,1,1)), hash3(i + vec3(1,1,1)), f.x), f.y), f.z);
+  }`;
+
+const DISSOLVE_GLSL = `
+  if (dissolve > 0.0) {
+    float dn = noise3(vObjPos * 6.0) * 0.7 + noise3(vObjPos * 17.0) * 0.3;
+    if (dn < dissolve) discard;
+    gl_FragColor.rgb += edgeColor * 4.0 * (1.0 - smoothstep(0.0, 0.08, dn - dissolve));
+  }`;
+
+function charUniforms(rim, rimStrength) {
+  return {
+    rimColor: { value: new THREE.Color(rim) }, rimStrength: { value: rimStrength },
+    dissolve: { value: 0 }, edgeColor: { value: new THREE.Color(0xff7a2a) },
+    flash: { value: 0 }, flashColor: { value: new THREE.Color(1, 1, 1) }, outlineWidth: { value: 0.022 },
+  };
+}
+
+function injectVertex(shader, extra = '') {
+  shader.vertexShader = 'varying vec3 vObjPos;\nuniform float outlineWidth;\n' + shader.vertexShader.replace(
+    '#include <begin_vertex>',
+    `#include <begin_vertex>\n vObjPos = position;\n${extra}`,
+  );
+}
+
+function injectFragmentHead(shader) {
+  shader.fragmentShader = `varying vec3 vObjPos;\nuniform vec3 rimColor; uniform float rimStrength; uniform float dissolve;
+    uniform vec3 edgeColor; uniform float flash; uniform vec3 flashColor;\n${NOISE_GLSL}\n` + shader.fragmentShader;
+}
+
+// Cel-shaded material with rim light, hit flash and dissolve (shared uniforms per model).
+function charMaterial(u, opts = {}) {
+  const m = new THREE.MeshToonMaterial({
+    vertexColors: true, gradientMap: Models.gradient, map: Models.grime,
+    transparent: !!opts.transparent, opacity: opts.opacity ?? 1, side: opts.side || THREE.FrontSide, depthWrite: !opts.transparent,
+  });
+  m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, u);
+    injectVertex(shader);
+    injectFragmentHead(shader);
+    shader.fragmentShader = shader.fragmentShader.replace('#include <output_fragment>', `
+      float rimF = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 2.4);
+      outgoingLight += rimColor * rimF * rimStrength;
+      outgoingLight = mix(outgoingLight, flashColor, flash);
+      #include <output_fragment>
+      ${DISSOLVE_GLSL}`);
+  };
+  m.customProgramCacheKey = () => 'char' + (opts.transparent ? 't' : '');
+  return m;
+}
+
+function glowMaterial(u) {
+  const m = new THREE.MeshBasicMaterial({ vertexColors: true });
+  m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, u);
+    injectVertex(shader);
+    injectFragmentHead(shader);
+    shader.fragmentShader = shader.fragmentShader.replace('#include <fog_fragment>', `#include <fog_fragment>\n${DISSOLVE_GLSL}`);
+  };
+  m.customProgramCacheKey = () => 'glow';
+  return m;
+}
+
+// Inked outline: the back faces, pushed out along their normals.
+function outlineMaterial(u) {
+  const m = new THREE.MeshBasicMaterial({ color: 0x0b0608, side: THREE.BackSide });
+  m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, u);
+    injectVertex(shader, 'transformed += normal * outlineWidth;');
+    injectFragmentHead(shader);
+    shader.fragmentShader = shader.fragmentShader.replace('#include <fog_fragment>', `#include <fog_fragment>\n${DISSOLVE_GLSL.replace('gl_FragColor.rgb += edgeColor * 4.0', 'gl_FragColor.rgb = edgeColor * 2.0')}`);
+  };
+  m.customProgramCacheKey = () => 'outline';
+  return m;
+}
 
 function initModels() {
-  // three-step ramp for the cel shading
   const c = makeCanvas(4, 1), g = c.getContext('2d');
-  ['#4a4a4a', '#9a9a9a', '#e0e0e0', '#ffffff'].forEach((col, i) => {
+  ['#55505a', '#9a949e', '#dcd8de', '#ffffff'].forEach((col, i) => {
     g.fillStyle = col;
     g.fillRect(i, 0, 1, 1);
   });
@@ -17,39 +115,131 @@ function initModels() {
   t.minFilter = t.magFilter = THREE.NearestFilter;
   t.generateMipmaps = false;
   Models.gradient = t;
-  Models.outline = new THREE.MeshBasicMaterial({ color: 0x0a0608, side: THREE.BackSide });
   Models.glowTex = new THREE.CanvasTexture(glowCanvas());
+  Models.grime = new THREE.CanvasTexture(fxCanvas('grime'));
+  Models.grime.wrapS = Models.grime.wrapT = THREE.RepeatWrapping;
+  // props share one set of materials: rough stone, polished metal, glow, glass, outline
+  const pu = charUniforms(0x000000, 0);
+  pu.outlineWidth.value = 0.014;
+  Models.props = {
+    base: new THREE.MeshStandardMaterial({ vertexColors: true, map: Models.grime, roughness: 0.82, metalness: 0.02 }),
+    metal: new THREE.MeshStandardMaterial({ vertexColors: true, map: Models.grime, roughness: 0.32, metalness: 0.85 }),
+    glow: new THREE.MeshBasicMaterial({ vertexColors: true }),
+    clear: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.72, depthWrite: false }),
+    outline: outlineMaterial(pu),
+  };
   Models.ready = true;
 }
 
-function toon(color, extra = {}) {
-  return new THREE.MeshToonMaterial({ color, gradientMap: Models.gradient, ...extra });
-}
-
-function glowMat(color, opacity = 1) {
-  return new THREE.SpriteMaterial({
-    map: Models.glowTex, color, transparent: true, opacity,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-  });
-}
-
 function glowSprite(color, size, opacity = 1) {
-  const s = new THREE.Sprite(glowMat(color, opacity));
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: Models.glowTex, color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false,
+  }));
   s.scale.setScalar(size);
   return s;
 }
 
-// A mesh with an inked outline. Geometry must be centred on its origin.
-function part(geo, mat, x = 0, y = 0, z = 0, outline = 0.07) {
-  const m = new THREE.Mesh(geo, mat);
-  m.position.set(x, y, z);
-  m.castShadow = true;
-  if (outline) {
-    const o = new THREE.Mesh(geo, Models.outline);
-    o.scale.setScalar(1 + outline);
-    m.add(o);
+// ---- Builder: collect parts, merge them per pivot and material ---------------------------------------
+
+function newBuilder(mats) {
+  return { mats, buckets: new Map() };
+}
+
+const tmpObj = new THREE.Object3D();
+const UP = new THREE.Vector3(0, 1, 0);
+
+// o: p [x,y,z], r [x,y,z] (Euler), s number|[x,y,z], q Quaternion, layer, outline, at Matrix4 (placement)
+function put(B, pivot, geo, color, o = {}) {
+  const g = geo.index ? geo.toNonIndexed() : geo.clone();
+  geo.dispose();
+  tmpObj.position.set(...(o.p || [0, 0, 0]));
+  if (o.q) tmpObj.quaternion.copy(o.q);
+  else tmpObj.rotation.set(...(o.r || [0, 0, 0]));
+  const s = o.s ?? 1;
+  if (Array.isArray(s)) tmpObj.scale.set(...s);
+  else tmpObj.scale.setScalar(s);
+  tmpObj.updateMatrix();
+  const m = o.at ? new THREE.Matrix4().multiplyMatrices(o.at, tmpObj.matrix) : tmpObj.matrix;
+  g.applyMatrix4(m);
+  const n = g.attributes.position.count;
+  if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
+  if (!g.attributes.normal) g.computeVertexNormals();
+  const c = new THREE.Color(color), k = o.bright || 1, cols = new Float32Array(n * 3);
+  const shade = o.shade; // optional per-vertex tint by height: (y) => multiplier
+  const pos = g.attributes.position.array;
+  for (let i = 0; i < n; i++) {
+    const f = (shade ? shade(pos[i * 3 + 1], pos[i * 3], pos[i * 3 + 2]) : 1) * k;
+    cols[i * 3] = c.r * f;
+    cols[i * 3 + 1] = c.g * f;
+    cols[i * 3 + 2] = c.b * f;
   }
-  return m;
+  g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  const layer = o.layer || 'base';
+  const key = `${pivot.uuid}|${layer}|${o.outline === false || layer === 'glow' || layer === 'clear' ? 0 : 1}`;
+  if (!B.buckets.has(key)) B.buckets.set(key, { pivot, layer, outline: !key.endsWith('0'), geos: [] });
+  B.buckets.get(key).geos.push(g);
+}
+
+// A tapered limb between two points.
+function limb(B, pivot, a, b, r0, r1, color, o = {}) {
+  const A = new THREE.Vector3(...a), Bv = new THREE.Vector3(...b);
+  const dir = Bv.clone().sub(A), len = dir.length();
+  const q = new THREE.Quaternion().setFromUnitVectors(UP, dir.normalize());
+  const mid = A.clone().add(Bv).multiplyScalar(0.5);
+  put(B, pivot, GEO.cyl(r1, r0, len, o.seg || 10), color, { ...o, p: [mid.x, mid.y, mid.z], q });
+}
+
+// A horn or tail: a chain of tapering segments along a curve.
+function hornTube(B, pivot, pts, r0, r1, color, o = {}) {
+  const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p)));
+  const steps = o.steps || 6;
+  for (let i = 0; i < steps; i++) {
+    const a = curve.getPoint(i / steps), b = curve.getPoint((i + 1) / steps);
+    const ra = r0 + (r1 - r0) * (i / steps), rb = r0 + (r1 - r0) * ((i + 1) / steps);
+    limb(B, pivot, [a.x, a.y, a.z], [b.x, b.y, b.z], ra, Math.max(0.002, rb), color, o);
+  }
+}
+
+function mergeGeos(list) {
+  let n = 0;
+  for (const g of list) n += g.attributes.position.count;
+  const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), uv = new Float32Array(n * 2), col = new Float32Array(n * 3);
+  let o = 0;
+  for (const g of list) {
+    pos.set(g.attributes.position.array, o * 3);
+    nor.set(g.attributes.normal.array, o * 3);
+    uv.set(g.attributes.uv.array, o * 2);
+    col.set(g.attributes.color.array, o * 3);
+    o += g.attributes.position.count;
+    g.dispose();
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+function bake(B, castShadow = true) {
+  const meshes = [];
+  for (const b of B.buckets.values()) {
+    const geo = mergeGeos(b.geos);
+    const mat = B.mats[b.layer] || B.mats.base;
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = castShadow && b.layer !== 'glow' && b.layer !== 'clear';
+    mesh.receiveShadow = b.layer === 'base' || b.layer === 'metal';
+    b.pivot.add(mesh);
+    meshes.push(mesh);
+    if (b.outline && B.mats.outline) {
+      const ol = new THREE.Mesh(geo, B.mats.outline);
+      ol.userData.outline = true;
+      b.pivot.add(ol);
+    }
+  }
+  B.buckets.clear();
+  return meshes;
 }
 
 function pivot(parent, x, y, z) {
@@ -59,420 +249,571 @@ function pivot(parent, x, y, z) {
   return p;
 }
 
-const GEO = {
-  sphere: (r, w = 14, h = 10) => new THREE.SphereGeometry(r, w, h),
-  cyl: (rt, rb, h, s = 10) => new THREE.CylinderGeometry(rt, rb, h, s),
-  box: (x, y, z) => new THREE.BoxGeometry(x, y, z),
-  cone: (r, h, s = 8) => new THREE.ConeGeometry(r, h, s),
+// A model's materials share one set of uniforms: flash, dissolve and rim apply to all its parts.
+function newCharacter(rim, rimStrength = 0.55, outline = 0.022) {
+  const u = charUniforms(rim, rimStrength);
+  u.outlineWidth.value = outline;
+  const mats = {
+    base: charMaterial(u), metal: null, glow: glowMaterial(u),
+    clear: charMaterial(u, { transparent: true, opacity: 0.72, side: THREE.DoubleSide }),
+    outline: outlineMaterial(u),
+  };
+  mats.metal = mats.base;
+  const root = new THREE.Group();
+  return { root, u, B: newBuilder(mats), mats, rig: {} };
+}
+
+function finishCharacter(c, extra = {}) {
+  bake(c.B);
+  c.root.traverse((o) => {
+    if (o.isMesh) o.frustumCulled = false;
+  });
+  return { root: c.root, rig: c.rig, u: c.u, mats: Object.values(c.mats), ...extra };
+}
+
+// ---- Shapes ----------------------------------------------------------------------------------------
+
+function bladeShape(len, w, tip = 0.18) {
+  const s = new THREE.Shape();
+  s.moveTo(-w / 2, 0);
+  s.lineTo(-w * 0.42, len - tip);
+  s.lineTo(0, len);
+  s.lineTo(w * 0.42, len - tip);
+  s.lineTo(w / 2, 0);
+  s.lineTo(-w / 2, 0);
+  return s;
+}
+
+function wingShape(span, height, scallops = 4) {
+  const s = new THREE.Shape();
+  s.moveTo(0, 0);
+  s.quadraticCurveTo(span * 0.35, height * 0.9, span, height);
+  for (let i = scallops; i > 0; i--) {
+    const x0 = (span * i) / scallops, x1 = (span * (i - 1)) / scallops;
+    s.quadraticCurveTo((x0 + x1) / 2, height * (0.15 + 0.1 * (i % 2)) - height * 0.25, x1, i === 1 ? 0 : height * 0.2 * (x1 / span));
+  }
+  return s;
+}
+
+function displace(geo, amount, seed) {
+  const g = geo.index ? geo.toNonIndexed() : geo;
+  const p = g.attributes.position, rnd = (x, y, z) => {
+    const h = Math.sin(x * 127.1 + y * 311.7 + z * 74.7 + seed) * 43758.5453;
+    return h - Math.floor(h);
+  };
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const k = 1 + (rnd(Math.round(x * 100), Math.round(y * 100), Math.round(z * 100)) - 0.5) * amount;
+    p.setXYZ(i, x * k, y * k, z * k);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+// Open cloth tube with a ragged hem.
+function tattered(rt, rb, h, seed, segs = 16) {
+  const g = new THREE.CylinderGeometry(rt, rb, h, segs, 4, true);
+  const p = g.attributes.position, rnd = mulberry32(seed);
+  const cut = Array.from({ length: segs + 1 }, () => rnd());
+  for (let i = 0; i < p.count; i++) {
+    const y = p.getY(i);
+    if (y < -h / 2 + 1e-4) {
+      const a = Math.atan2(p.getZ(i), p.getX(i));
+      const k = Math.round(((a + Math.PI) / (Math.PI * 2)) * segs) % (segs + 1);
+      p.setY(i, y + cut[k] * h * 0.28);
+    }
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+// Cloth that the scene animates every frame (cape, banners, robes).
+function clothMesh(w, h, colorTop, colorBottom, mat, trim) {
+  const geo = new THREE.PlaneGeometry(w, h, 6, 10);
+  geo.translate(0, -h / 2, 0);
+  const n = geo.attributes.position.count, cols = new Float32Array(n * 3);
+  const a = new THREE.Color(colorTop), b = new THREE.Color(colorBottom), t = trim ? new THREE.Color(trim) : null;
+  for (let i = 0; i < n; i++) {
+    const x = geo.attributes.position.getX(i), y = geo.attributes.position.getY(i);
+    const f = -y / h;
+    const c = a.clone().lerp(b, f);
+    if (t && (f > 0.9 || Math.abs(x) > w / 2 - 0.035)) c.copy(t);
+    cols.set([c.r, c.g, c.b], i * 3);
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  mesh.userData.rest = Float32Array.from(geo.attributes.position.array);
+  mesh.userData.h = h;
+  return mesh;
+}
+
+// ---- Hero -----------------------------------------------------------------------------------------
+
+const HERO_COL = {
+  skin: 0xe2b48a, hair: 0x2a1214, hairTip: 0x7a1e22, tunic: 0x8e1a26, leather: 0x4a3028, bronze: 0xa8742e,
+  gold: 0xf2c14e, steel: 0xdfe4ee, dark: 0x1a1012,
 };
 
-function eyes(parent, color, y, z, spread, size = 0.045) {
-  const mat = new THREE.MeshBasicMaterial({ color });
-  for (const s of [-1, 1]) {
-    const e = new THREE.Mesh(GEO.sphere(size, 8, 6), mat);
-    e.position.set(spread * s, y, z);
-    parent.add(e);
-  }
-  const glow = glowSprite(color, size * 9, 0.7);
-  glow.position.set(0, y, z + 0.02);
-  parent.add(glow);
-}
-
-// ---- Hero ---------------------------------------------------------------------------------------
-
 function buildHero(weapon) {
-  const root = new THREE.Group();
+  const c = newCharacter(0xffc070, 0.6, 0.02);
+  const { B, root } = c, H = HERO_COL;
   const body = pivot(root, 0, 0, 0);
-  const skin = toon(0xe2b48a), cloth = toon(0x7a1d2a), leather = toon(0x3b2a2a), bronze = toon(0xd29a3c);
-  const hair = toon(0x231014), steel = toon(0xdfe4ee, { emissive: 0x331018 });
-  const mats = [skin, cloth, leather, bronze, hair, steel];
-
-  const legs = [];
+  const legs = [], knees = [];
   for (const s of [-1, 1]) {
-    const hip = pivot(body, 0.13 * s, 0.9, 0);
-    hip.add(part(GEO.cyl(0.09, 0.075, 0.6), leather, 0, -0.3, 0));
-    hip.add(part(GEO.box(0.15, 0.12, 0.26), bronze, 0, -0.62, 0.04));
+    const hip = pivot(body, 0.12 * s, 0.92, 0);
+    limb(B, hip, [0, 0, 0], [0, -0.42, 0.02], 0.1, 0.08, H.tunic);
+    put(B, hip, GEO.sphere(0.075, 10, 8), H.skin, { p: [0, -0.43, 0.02] });
+    const knee = pivot(hip, 0, -0.43, 0.02);
+    limb(B, knee, [0, 0, 0], [0, -0.4, -0.02], 0.07, 0.06, H.skin);
+    put(B, knee, GEO.cyl(0.082, 0.07, 0.28, 12), H.bronze, { p: [0, -0.2, 0.012], layer: 'metal' });
+    put(B, knee, GEO.box(0.13, 0.07, 0.27), H.leather, { p: [0, -0.44, 0.04] });
+    for (let k = 0; k < 3; k++) put(B, knee, GEO.torus(0.07, 0.01, 4, 12), H.leather, { p: [0, -0.32 + k * 0.05, 0], r: [Math.PI / 2, 0, 0], outline: false });
     legs.push(hip);
+    knees.push(knee);
   }
-  body.add(part(GEO.cyl(0.24, 0.27, 0.28), leather, 0, 0.98, 0));
-  const torso = pivot(body, 0, 1.1, 0);
-  torso.add(part(GEO.cyl(0.3, 0.23, 0.55), cloth, 0, 0.25, 0));
-  const plate = part(GEO.sphere(0.27, 12, 8), bronze, 0, 0.32, 0.07);
-  plate.scale.set(1, 0.85, 0.65);
-  torso.add(plate);
-  for (const s of [-1, 1]) torso.add(part(GEO.sphere(0.13, 10, 8), bronze, 0.34 * s, 0.44, 0));
-  const head = pivot(torso, 0, 0.72, 0);
-  head.add(part(GEO.sphere(0.2), skin, 0, 0, 0));
-  const hairMesh = part(GEO.sphere(0.215), hair, 0, 0.05, -0.04, 0.05);
-  hairMesh.scale.set(1, 0.85, 1.05);
-  head.add(hairMesh);
-  const laurel = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.028, 6, 18), toon(0xf2c14e, { emissive: 0x3a2400 }));
-  laurel.rotation.x = Math.PI / 2;
-  laurel.position.y = 0.09;
-  head.add(laurel);
-
-  const arms = [];
+  // pteruges: leather strips around the hips
+  for (let k = 0; k < 12; k++) {
+    const a = (k / 12) * Math.PI * 2;
+    put(B, body, GEO.box(0.085, 0.27, 0.03), k % 2 ? H.tunic : H.leather, {
+      p: [Math.sin(a) * 0.25, 0.83, Math.cos(a) * 0.23], r: [Math.cos(a) * 0.22, a, -Math.sin(a) * 0.22], outline: false,
+    });
+  }
+  put(B, body, GEO.torus(0.25, 0.035, 6, 20), H.leather, { p: [0, 0.98, 0], r: [Math.PI / 2, 0, 0] });
+  put(B, body, GEO.box(0.09, 0.08, 0.04), H.gold, { p: [0, 0.98, 0.25], layer: 'metal' });
+  const torso = pivot(body, 0, 1.0, 0);
+  put(B, torso, GEO.lathe([[0.0, 0], [0.23, 0], [0.27, 0.18], [0.33, 0.42], [0.3, 0.56], [0.14, 0.64], [0, 0.65]], 18), H.tunic, { s: [1, 1, 0.78] });
+  put(B, torso, GEO.sphere(0.29, 16, 12), H.bronze, { p: [0, 0.38, 0.07], s: [1, 0.85, 0.55], layer: 'metal' });
+  put(B, torso, GEO.box(0.05, 0.62, 0.03), H.leather, { p: [0.02, 0.33, 0.23], r: [0, 0, 0.62] });
   for (const s of [-1, 1]) {
-    const sh = pivot(torso, 0.36 * s, 0.42, 0);
-    sh.add(part(GEO.cyl(0.07, 0.06, 0.48), skin, 0, -0.24, 0));
-    sh.add(part(GEO.sphere(0.075, 8, 6), leather, 0, -0.5, 0));
-    arms.push(sh);
+    put(B, torso, GEO.dome(0.15, 14, 6), H.bronze, { p: [0.34 * s, 0.52, 0], r: [0, 0, -0.5 * s], s: [1, 0.7, 1.05], layer: 'metal' });
+    put(B, torso, GEO.torus(0.13, 0.018, 4, 16), H.gold, { p: [0.36 * s, 0.47, 0], r: [Math.PI / 2, 0.5 * s, 0], outline: false });
   }
-  const cape = new THREE.Mesh(new THREE.PlaneGeometry(0.46, 0.72, 1, 4), toon(0x8e1a26, { side: THREE.DoubleSide }));
-  cape.geometry.translate(0, -0.36, 0);
-  const capePivot = pivot(torso, 0, 0.42, -0.24);
+  put(B, torso, GEO.cyl(0.07, 0.08, 0.12, 10), H.skin, { p: [0, 0.68, 0] });
+  const head = pivot(torso, 0, 0.84, 0.01);
+  put(B, head, GEO.sphere(0.18, 18, 14), H.skin, { s: [0.92, 1.05, 1] });
+  put(B, head, GEO.sphere(0.1, 12, 8), H.skin, { p: [0, -0.1, 0.05], s: [1, 0.8, 1] });
+  put(B, head, GEO.cone(0.025, 0.07, 6), H.skin, { p: [0, -0.01, 0.18], r: [Math.PI / 2, 0, 0], outline: false });
+  for (const s of [-1, 1]) {
+    put(B, head, GEO.sphere(0.022, 8, 6), H.dark, { p: [0.065 * s, 0.03, 0.155], outline: false });
+    put(B, head, GEO.box(0.07, 0.016, 0.02), H.hair, { p: [0.065 * s, 0.075, 0.16], r: [0, 0, 0.2 * s], outline: false });
+    put(B, head, GEO.sphere(0.035, 8, 6), H.skin, { p: [0.17 * s, -0.01, 0], s: [0.5, 1, 0.8] });
+  }
+  put(B, head, GEO.sphere(0.195, 16, 10, 0), H.hair, { p: [0, 0.04, -0.03], s: [1.02, 0.95, 1.05] });
+  for (let k = 0; k < 9; k++) {
+    const a = -1.2 + (k / 8) * 2.4;
+    put(B, head, GEO.cone(0.06, 0.22, 6), k % 3 === 1 ? H.hairTip : H.hair, {
+      p: [Math.sin(a) * 0.12, 0.13, -0.06 + Math.cos(a) * 0.04], r: [-1.9 + Math.random() * 0.3, 0, -a * 0.6],
+    });
+  }
+  // laurel crown
+  for (let k = 0; k < 16; k++) {
+    const a = (k / 16) * Math.PI * 2;
+    put(B, head, GEO.sphere(0.03, 6, 4), H.gold, {
+      p: [Math.sin(a) * 0.2, 0.1 + Math.sin(a * 2) * 0.01, Math.cos(a) * 0.19], r: [0.5, a, 0.4], s: [0.55, 0.32, 1.4], layer: 'glow', bright: 1.15,
+    });
+  }
+  const arms = [], elbows = [];
+  for (const s of [-1, 1]) {
+    const sh = pivot(torso, 0.36 * s, 0.48, 0);
+    limb(B, sh, [0, 0, 0], [0.02 * s, -0.3, 0], 0.07, 0.06, H.skin);
+    const el = pivot(sh, 0.02 * s, -0.3, 0);
+    limb(B, el, [0, 0, 0], [0, -0.27, 0.03], 0.058, 0.05, H.skin);
+    put(B, el, GEO.cyl(0.066, 0.06, 0.15, 10), H.bronze, { p: [0, -0.15, 0.02], layer: 'metal' });
+    put(B, el, GEO.sphere(0.06, 10, 8), H.skin, { p: [0, -0.31, 0.03] });
+    arms.push(sh);
+    elbows.push(el);
+  }
+  const capePivot = pivot(torso, 0, 0.56, -0.2);
+  const cape = clothMesh(0.6, 0.98, 0x7a1220, 0x4a0a14, charMaterial(c.u, { side: THREE.DoubleSide }), H.gold);
   capePivot.add(cape);
-  cape.castShadow = true;
-  mats.push(cape.material);
 
-  // weapon pivot sits at the right hand side of the body so swings read well from above
-  const weaponPivot = pivot(body, 0.3, 1.05, 0.1);
+  const weaponPivot = pivot(body, 0.3, 1.05, 0.12);
+  const tip = new THREE.Object3D(), base = new THREE.Object3D();
+  weaponPivot.add(tip, base);
   if (weapon === 'bow') {
-    const bow = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.035, 6, 20, Math.PI * 0.85), toon(0x6b3a1f));
-    bow.rotation.z = Math.PI / 2 - Math.PI * 0.425;
-    bow.rotation.y = Math.PI / 2;
-    bow.position.set(-0.05, 0, 0.35);
-    weaponPivot.add(bow);
-    const string = new THREE.Mesh(GEO.cyl(0.006, 0.006, 0.86, 4), new THREE.MeshBasicMaterial({ color: 0xf6e6c0 }));
-    string.position.set(-0.05, 0, 0.12);
-    weaponPivot.add(string);
-    const gem = glowSprite(0xffc777, 0.35, 0.8);
-    gem.position.set(-0.05, 0, 0.82);
-    weaponPivot.add(gem);
+    const curve = [[0, -0.55, 0.02], [0, -0.42, 0.1], [0, -0.2, 0.04], [0, 0, 0.0], [0, 0.2, 0.04], [0, 0.42, 0.1], [0, 0.55, 0.02]];
+    put(B, weaponPivot, GEO.tube(curve.map(([x, y, z]) => [x, y, z + 0.32]), 0.03, 24, 6), 0x6b3a1f, {});
+    put(B, weaponPivot, GEO.cyl(0.006, 0.006, 1.06, 4), 0xf6e6c0, { p: [0, 0, 0.35], outline: false });
+    for (const y of [-0.56, 0.56]) put(B, weaponPivot, GEO.sphere(0.035, 8, 6), H.gold, { p: [0, y, 0.34], layer: 'glow', bright: 1.3 });
+    put(B, weaponPivot, GEO.sphere(0.05, 10, 8), 0xffc777, { p: [0, 0, 0.33], layer: 'glow', bright: 2.2 });
+    tip.position.set(0, 0.55, 0.34);
+    base.position.set(0, -0.55, 0.34);
   } else {
-    const blade = part(GEO.box(0.07, 0.03, 1.05), steel, 0, 0, 0.66, 0.12);
-    weaponPivot.add(blade);
-    weaponPivot.add(part(GEO.box(0.3, 0.05, 0.06), bronze, 0, 0, 0.12));
-    weaponPivot.add(part(GEO.cyl(0.03, 0.03, 0.22, 6), leather, 0, 0, -0.02).rotateX(Math.PI / 2));
-    const edge = glowSprite(0xff5a4a, 0.5, 0.35);
-    edge.position.set(0, 0, 1.1);
-    weaponPivot.add(edge);
+    const blade = GEO.extrude(bladeShape(1.0, 0.1, 0.2), 0.016, 0.008);
+    put(B, weaponPivot, blade, H.steel, { p: [0, 0, 0.18], r: [Math.PI / 2, 0, 0], layer: 'metal' });
+    put(B, weaponPivot, GEO.box(0.012, 0.012, 0.7), 0xff5a3a, { p: [0, 0.018, 0.55], layer: 'glow', bright: 2.4 });
+    put(B, weaponPivot, GEO.torus(0.11, 0.022, 6, 16, Math.PI), H.gold, { p: [0, 0, 0.17], r: [Math.PI / 2, 0, Math.PI], layer: 'metal' });
+    put(B, weaponPivot, GEO.cyl(0.026, 0.026, 0.2, 8), H.leather, { p: [0, 0, 0.05], r: [Math.PI / 2, 0, 0] });
+    put(B, weaponPivot, GEO.sphere(0.04, 10, 8), H.gold, { p: [0, 0, -0.06], layer: 'metal' });
+    tip.position.set(0, 0, 1.18);
+    base.position.set(0, 0, 0.3);
   }
   root.scale.setScalar(1.12);
-  return { root, rig: { body, torso, head, legs, arms, cape: capePivot, weapon: weaponPivot }, mats, height: 2 };
+  return finishCharacter(c, { rig: { body, torso, head, legs, knees, arms, elbows, cape, capePivot, weapon: weaponPivot, tip, base } });
 }
 
-// ---- Enemies ------------------------------------------------------------------------------------
+// ---- Enemies --------------------------------------------------------------------------------------
 
-function buildWretch(def, scale = 1) {
-  const root = new THREE.Group(), body = pivot(root, 0, 0, 0);
-  const skin = toon(def.color), rag = toon(0x2a2a24), claw = toon(0xd8d2c0);
-  const trunk = part(GEO.cyl(0.24, 0.42, 0.95, 9), rag, 0, 0.55, 0);
-  trunk.rotation.x = 0.3;
-  body.add(trunk);
-  const head = pivot(body, 0, 1.08, 0.28);
-  head.add(part(GEO.sphere(0.23), skin, 0, 0, 0));
-  eyes(head, 0xff3b2f, 0.02, 0.19, 0.08);
+function eyes(B, pv, color, y, z, spread, size = 0.04, bright = 3) {
+  for (const s of [-1, 1]) put(B, pv, GEO.sphere(size, 8, 6), color, { p: [spread * s, y, z], layer: 'glow', bright });
+}
+
+function buildWretch(def) {
+  const c = newCharacter(0xff6a4a, 0.5), { B, root } = c, skin = def.color, rag = 0x2e2c26, bone = 0xc8bfa8;
+  const body = pivot(root, 0, 0, 0);
+  for (const s of [-1, 1]) limb(B, body, [0.12 * s, 0.6, 0], [0.14 * s, 0, 0.08], 0.06, 0.05, skin);
+  put(B, body, tattered(0.22, 0.46, 1.0, 7), rag, { p: [0, 0.62, -0.02], r: [0.28, 0, 0] });
+  put(B, body, GEO.sphere(0.3, 14, 10), 0x3a3a30, { p: [0, 0.98, -0.06], s: [1, 0.8, 0.9] });
+  const head = pivot(body, 0, 1.12, 0.26);
+  put(B, head, GEO.sphere(0.18, 14, 10), bone, { s: [0.9, 1, 1.05] });
+  put(B, head, GEO.box(0.16, 0.06, 0.12), bone, { p: [0, -0.13, 0.06] });
+  for (let k = 0; k < 5; k++) put(B, head, GEO.cone(0.015, 0.05, 4), 0xf0e8d0, { p: [-0.05 + k * 0.025, -0.1, 0.12], r: [Math.PI, 0, 0], outline: false });
+  put(B, head, GEO.cone(0.27, 0.42, 12, true), rag, { p: [0, 0.06, -0.06], r: [-0.35, 0, 0] });
+  eyes(B, head, 0xff3b2f, 0.02, 0.15, 0.065, 0.034, 3.5);
   const arms = [];
   for (const s of [-1, 1]) {
-    const sh = pivot(body, 0.34 * s, 0.9, 0.12);
-    sh.add(part(GEO.cyl(0.07, 0.05, 0.55), skin, 0, -0.27, 0));
-    const c = part(GEO.cone(0.07, 0.32, 5), claw, 0, -0.62, 0.04);
-    c.rotation.x = Math.PI;
-    sh.add(c);
+    const sh = pivot(body, 0.32 * s, 0.95, 0.12);
+    limb(B, sh, [0, 0, 0], [0.05 * s, -0.36, 0.08], 0.065, 0.05, skin);
+    limb(B, sh, [0.05 * s, -0.36, 0.08], [0.02 * s, -0.66, 0.16], 0.05, 0.04, skin);
+    for (let k = -1; k <= 1; k++) {
+      put(B, sh, GEO.cone(0.022, 0.2, 5), bone, { p: [0.02 * s + k * 0.03, -0.75, 0.2], r: [Math.PI - 0.5, 0, k * 0.2] });
+    }
     arms.push(sh);
   }
-  root.scale.setScalar(scale);
-  return { root, rig: { body, head, arms }, mats: [skin, rag, claw] };
-}
-
-function batWing(color, side) {
-  const shape = new THREE.Shape();
-  shape.moveTo(0, 0);
-  shape.bezierCurveTo(0.3 * side, 0.25, 0.7 * side, 0.2, 0.85 * side, 0.05);
-  shape.lineTo(0.62 * side, -0.12);
-  shape.lineTo(0.45 * side, -0.02);
-  shape.lineTo(0.3 * side, -0.16);
-  shape.lineTo(0.15 * side, -0.05);
-  shape.lineTo(0, -0.1);
-  const m = new THREE.Mesh(new THREE.ShapeGeometry(shape), toon(color, { side: THREE.DoubleSide }));
-  m.rotation.x = -Math.PI / 2;
-  m.castShadow = true;
-  return m;
+  return finishCharacter(c, { rig: { body, head, arms } });
 }
 
 function buildBat(def) {
-  const root = new THREE.Group(), body = pivot(root, 0, 1.2, 0);
-  const fur = toon(0x2f2040);
-  body.add(part(GEO.sphere(0.24), fur, 0, 0, 0));
+  const c = newCharacter(0xc89cff, 0.6, 0.016), { B, root } = c, fur = 0x2a1c3a, mem = def.color;
+  const body = pivot(root, 0, 1.2, 0);
+  put(B, body, GEO.sphere(0.22, 14, 10), fur, { s: [1, 0.95, 1.1] });
+  put(B, body, GEO.sphere(0.15, 12, 8), fur, { p: [0, 0.14, 0.15] });
   for (const s of [-1, 1]) {
-    const ear = part(GEO.cone(0.07, 0.18, 5), fur, 0.12 * s, 0.22, 0.04);
-    body.add(ear);
+    put(B, body, GEO.cone(0.06, 0.22, 6), fur, { p: [0.08 * s, 0.32, 0.12], r: [-0.2, 0, -0.35 * s] });
+    put(B, body, GEO.cone(0.012, 0.05, 4), 0xffffff, { p: [0.03 * s, 0.06, 0.28], r: [Math.PI, 0, 0], outline: false });
   }
-  eyes(body, 0xffd84a, 0.05, 0.2, 0.08, 0.04);
+  eyes(B, body, 0xffd84a, 0.17, 0.27, 0.055, 0.03, 3);
   const wings = [];
   for (const s of [-1, 1]) {
-    const w = pivot(body, 0.12 * s, 0, 0);
-    const wing = batWing(def.color, s);
-    w.add(wing);
+    const w = pivot(body, 0.15 * s, 0.05, 0);
+    put(B, w, GEO.extrude(wingShape(0.85, 0.32, 4), 0.012, 0), mem, { r: [-Math.PI / 2, 0, 0], s: [s, 1, 1], p: [0, 0, 0.16] });
+    for (let k = 0; k < 4; k++) limb(B, w, [0, 0.01, 0.1], [s * (0.25 + k * 0.17), 0.01, 0.1 - 0.3 + k * 0.05], 0.012, 0.006, fur, { outline: false });
     wings.push(w);
   }
-  return { root, rig: { body, wings }, mats: [fur, wings[0].children[0].material, wings[1].children[0].material] };
+  return finishCharacter(c, { rig: { body, wings } });
 }
 
 function buildSkeleton(def, scale = 1, armored = false) {
-  const root = new THREE.Group(), body = pivot(root, 0, 0, 0);
-  const bone = toon(def.color), dark = toon(0x2b2d36), iron = toon(0x4a4f5e);
-  const mats = [bone, dark, iron];
+  const c = newCharacter(armored ? 0xb98cff : 0x9fe6f2, armored ? 0.75 : 0.55, armored ? 0.016 : 0.018);
+  const { B, root } = c, bone = def.color, iron = 0x3e4250, violet = 0xb98cff;
+  const body = pivot(root, 0, 0, 0);
   const legs = [];
   for (const s of [-1, 1]) {
-    const hip = pivot(body, 0.11 * s, 0.85, 0);
-    hip.add(part(GEO.cyl(0.045, 0.04, 0.8, 6), bone, 0, -0.4, 0));
-    if (armored) hip.add(part(GEO.box(0.16, 0.3, 0.18), iron, 0, -0.55, 0.03));
+    const hip = pivot(body, 0.11 * s, 0.86, 0);
+    limb(B, hip, [0, 0, 0], [0, -0.42, 0.02], 0.04, 0.035, bone);
+    put(B, hip, GEO.sphere(0.05, 8, 6), bone, { p: [0, -0.43, 0.02] });
+    limb(B, hip, [0, -0.43, 0.02], [0, -0.82, -0.02], 0.035, 0.03, bone);
+    put(B, hip, GEO.box(0.1, 0.05, 0.2), bone, { p: [0, -0.84, 0.05] });
+    if (armored) {
+      put(B, hip, GEO.cyl(0.09, 0.08, 0.36, 10), iron, { p: [0, -0.2, 0.01], layer: 'metal' });
+      put(B, hip, GEO.cyl(0.08, 0.075, 0.3, 10), iron, { p: [0, -0.62, 0], layer: 'metal' });
+    }
     legs.push(hip);
   }
-  const torso = pivot(body, 0, 0.9, 0);
-  torso.add(part(GEO.cyl(0.04, 0.04, 0.5, 6), bone, 0, 0.25, -0.02));
-  const ribs = part(GEO.cyl(0.22, 0.16, 0.36, 10), armored ? iron : bone, 0, 0.42, 0);
-  torso.add(ribs);
-  const head = pivot(torso, 0, 0.84, 0.02);
-  head.add(part(GEO.sphere(0.19), bone, 0, 0, 0));
-  head.add(part(GEO.box(0.2, 0.08, 0.14), bone, 0, -0.14, 0.05));
-  if (armored) {
-    const helm = part(GEO.cyl(0.22, 0.22, 0.24, 12), iron, 0, 0.07, 0);
-    head.add(helm);
-    head.add(part(GEO.cone(0.05, 0.3, 6), iron, 0, 0.3, 0));
+  put(B, body, GEO.torus(0.13, 0.04, 6, 14), bone, { p: [0, 0.9, 0], r: [Math.PI / 2, 0, 0] });
+  const torso = pivot(body, 0, 0.92, 0);
+  for (let k = 0; k < 5; k++) put(B, torso, GEO.sphere(0.04, 8, 6), bone, { p: [0, 0.06 + k * 0.1, -0.06] });
+  for (let k = 0; k < 4; k++) {
+    put(B, torso, GEO.torus(0.17 - k * 0.012, 0.022, 5, 14, Math.PI * 1.55), bone, { p: [0, 0.22 + k * 0.08, 0], r: [Math.PI / 2, 0, -Math.PI * 0.27 + Math.PI / 2], s: [1, 0.85, 1] });
   }
-  eyes(head, armored ? 0xb98cff : 0x7fe8ff, 0.01, 0.16, 0.07, 0.04);
+  put(B, torso, GEO.box(0.04, 0.3, 0.03), bone, { p: [0, 0.33, 0.15] });
+  if (armored) {
+    put(B, torso, GEO.lathe([[0, 0], [0.2, 0], [0.27, 0.2], [0.3, 0.42], [0.22, 0.56], [0, 0.58]], 16), iron, { p: [0, 0.05, 0], s: [1, 1, 0.8], layer: 'metal' });
+    put(B, torso, GEO.box(0.04, 0.4, 0.02), violet, { p: [0, 0.32, 0.245], layer: 'glow', bright: 2 });
+    for (const s of [-1, 1]) {
+      put(B, torso, GEO.dome(0.16, 12, 6), iron, { p: [0.3 * s, 0.56, 0], r: [0, 0, -0.5 * s], layer: 'metal' });
+      for (let k = 0; k < 3; k++) put(B, torso, GEO.cone(0.03, 0.14, 6), 0x8a8e9c, { p: [0.33 * s + k * 0.04 * s, 0.66, -0.06 + k * 0.06], r: [0, 0, -0.6 * s] });
+    }
+  }
+  const head = pivot(torso, 0, 0.78, 0.02);
+  put(B, head, GEO.sphere(0.17, 14, 12), bone, { s: [0.95, 1, 1.05] });
+  put(B, head, GEO.box(0.16, 0.07, 0.13), bone, { p: [0, -0.15, 0.05] });
+  for (const s of [-1, 1]) put(B, head, GEO.sphere(0.05, 8, 6), 0x161018, { p: [0.065 * s, 0.01, 0.13], outline: false });
+  eyes(B, head, armored ? violet : 0x7fe8ff, 0.01, 0.16, 0.065, 0.022, 4);
+  if (armored) {
+    put(B, head, GEO.cyl(0.2, 0.2, 0.26, 16), iron, { p: [0, 0.04, 0], layer: 'metal' });
+    put(B, head, GEO.box(0.26, 0.03, 0.05), violet, { p: [0, 0.02, 0.19], layer: 'glow', bright: 2.5 });
+    for (let k = 0; k < 7; k++) put(B, head, GEO.cone(0.03, 0.34, 5), 0x8e1a26, { p: [0, 0.22, -0.12 + k * 0.03], r: [-1.2 + k * 0.25, 0, 0] });
+  }
   const arms = [];
   for (const s of [-1, 1]) {
-    const sh = pivot(torso, 0.27 * s, 0.56, 0);
-    sh.add(part(GEO.cyl(0.04, 0.035, 0.6, 6), bone, 0, -0.3, 0));
-    if (armored) sh.add(part(GEO.sphere(0.13, 10, 8), iron, 0, 0.02, 0));
+    const sh = pivot(torso, 0.26 * s, 0.56, 0);
+    limb(B, sh, [0, 0, 0], [0.03 * s, -0.3, 0], 0.035, 0.03, bone);
+    put(B, sh, GEO.sphere(0.04, 8, 6), bone, { p: [0.03 * s, -0.3, 0] });
+    limb(B, sh, [0.03 * s, -0.3, 0], [0.02 * s, -0.56, 0.08], 0.03, 0.025, bone);
+    if (armored) put(B, sh, GEO.cyl(0.07, 0.06, 0.2, 10), iron, { p: [0.02 * s, -0.45, 0.04], layer: 'metal' });
     arms.push(sh);
   }
   const weapon = pivot(body, 0.32, 1.0, 0.12);
   if (armored) {
-    const blade = part(GEO.box(0.12, 0.05, 1.6), toon(0xc8c2d8, { emissive: 0x2a1650 }), 0, 0, 0.9, 0.1);
-    weapon.add(blade);
-    weapon.add(part(GEO.box(0.42, 0.07, 0.08), iron, 0, 0, 0.1));
-    const g = glowSprite(0xb98cff, 0.9, 0.5);
-    g.position.set(0, 0, 1.6);
-    weapon.add(g);
+    put(B, weapon, GEO.extrude(bladeShape(1.6, 0.17, 0.3), 0.03, 0.012), 0xc8c2d8, { p: [0, 0, 0.2], r: [Math.PI / 2, 0, 0], layer: 'metal' });
+    put(B, weapon, GEO.box(0.03, 0.03, 1.2), violet, { p: [0, 0.03, 0.85], layer: 'glow', bright: 3 });
+    put(B, weapon, GEO.box(0.46, 0.08, 0.09), iron, { p: [0, 0, 0.16], layer: 'metal' });
+    put(B, weapon, GEO.cyl(0.035, 0.035, 0.3, 8), 0x3a2a2a, { p: [0, 0, 0], r: [Math.PI / 2, 0, 0] });
+    const shield = new THREE.Shape();
+    shield.moveTo(-0.32, 0.4);
+    shield.lineTo(0.32, 0.4);
+    shield.lineTo(0.3, -0.1);
+    shield.quadraticCurveTo(0.2, -0.42, 0, -0.55);
+    shield.quadraticCurveTo(-0.2, -0.42, -0.3, -0.1);
+    shield.lineTo(-0.32, 0.4);
+    put(B, arms[0], GEO.extrude(shield, 0.05, 0.02), iron, { p: [-0.12, -0.45, 0.12], r: [0, -1.2, 0], layer: 'metal' });
+    put(B, arms[0], GEO.box(0.06, 0.6, 0.02), violet, { p: [-0.07, -0.42, 0.18], r: [0, -1.2, 0], layer: 'glow', bright: 2 });
   } else {
-    const bow = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.03, 6, 18, Math.PI * 0.85), toon(0x5a3a26));
-    bow.rotation.set(0, Math.PI / 2, Math.PI / 2 - Math.PI * 0.425);
-    bow.position.set(-0.1, 0.1, 0.3);
-    weapon.add(bow);
+    const curve = [[0, -0.48, 0.0], [0, -0.3, 0.12], [0, 0, 0.05], [0, 0.3, 0.12], [0, 0.48, 0]];
+    put(B, weapon, GEO.tube(curve.map(([x, y, z]) => [x - 0.1, y + 0.1, z + 0.25]), 0.025, 20, 5), 0x5a3a26);
+    put(B, weapon, GEO.cyl(0.004, 0.004, 0.96, 3), 0xe8e0c8, { p: [-0.1, 0.1, 0.25], outline: false });
+    put(B, body, GEO.cyl(0.07, 0.06, 0.5, 10), 0x4a3022, { p: [0.12, 1.25, -0.2], r: [0.4, 0, -0.3] });
+    for (let k = 0; k < 3; k++) limb(B, body, [0.1 + k * 0.03, 1.45, -0.28], [0.16 + k * 0.03, 1.62, -0.36], 0.01, 0.01, 0xe0d0b0, { outline: false });
   }
   root.scale.setScalar(scale);
-  return { root, rig: { body, torso, head, legs, arms, weapon }, mats };
+  return finishCharacter(c, { rig: { body, torso, head, legs, arms, weapon } });
 }
 
-function buildSlime(def, scale = 1) {
-  const root = new THREE.Group(), body = pivot(root, 0, 0, 0);
-  const r = def.radius;
-  const goo = toon(def.color, { transparent: true, opacity: 0.82, emissive: 0x0d2a08 });
-  const blob = part(GEO.sphere(r, 16, 12), goo, 0, r * 0.85, 0, 0.05);
-  blob.scale.y = 0.85;
-  body.add(blob);
-  body.add(part(GEO.sphere(r * 0.45, 10, 8), toon(0x2f6a28), 0, r * 0.7, -r * 0.1, 0));
-  const white = new THREE.MeshBasicMaterial({ color: 0xffffff }), black = new THREE.MeshBasicMaterial({ color: 0x111111 });
+function buildSlime(def) {
+  const c = newCharacter(0xd8ffb0, 0.9, 0.02), { B, root } = c, r = def.radius;
+  const body = pivot(root, 0, 0, 0);
+  put(B, body, displace(GEO.ico(r, 3), 0.12, 3), def.color, { p: [0, r * 0.82, 0], s: [1, 0.85, 1], layer: 'clear', bright: 1.15 });
+  put(B, body, GEO.sphere(r * 0.42, 12, 10), 0x2f6a28, { p: [0, r * 0.7, -r * 0.1], outline: false });
+  put(B, body, GEO.sphere(r * 0.12, 8, 6), 0xd8d0b0, { p: [r * 0.25, r * 0.5, 0.1], outline: false });
+  for (let k = 0; k < 5; k++) put(B, body, GEO.sphere(r * 0.06, 6, 4), 0xc8ffb0, { p: [Math.sin(k * 2.1) * r * 0.5, r * (0.4 + k * 0.12), Math.cos(k * 2.1) * r * 0.4], layer: 'glow', bright: 1.2 });
   for (const s of [-1, 1]) {
-    const e = new THREE.Mesh(GEO.sphere(r * 0.16, 8, 6), white);
-    e.position.set(r * 0.3 * s, r * 1.15, r * 0.62);
-    body.add(e);
-    const p = new THREE.Mesh(GEO.sphere(r * 0.08, 6, 5), black);
-    p.position.set(r * 0.3 * s, r * 1.15, r * 0.75);
-    body.add(p);
+    put(B, body, GEO.sphere(r * 0.17, 10, 8), 0xffffff, { p: [r * 0.3 * s, r * 1.15, r * 0.6] });
+    put(B, body, GEO.sphere(r * 0.08, 8, 6), 0x111111, { p: [r * 0.3 * s, r * 1.17, r * 0.74], outline: false });
   }
-  root.scale.setScalar(scale);
-  return { root, rig: { body, blob }, mats: [goo] };
+  put(B, body, GEO.sphere(r * 0.1, 8, 6), 0xffffff, { p: [-r * 0.35, r * 1.35, r * 0.25], layer: 'glow', bright: 1.6 });
+  return finishCharacter(c, { rig: { body } });
 }
 
 function buildWraith(def) {
-  const root = new THREE.Group(), body = pivot(root, 0, 0.35, 0);
-  const robe = toon(def.color, { transparent: true, opacity: 0.75, emissive: 0x0a3a34, side: THREE.DoubleSide });
-  const cloak = new THREE.Mesh(GEO.cyl(0.14, 0.52, 1.35, 12).toNonIndexed(), robe);
-  cloak.position.y = 0.6;
-  body.add(cloak);
-  const head = pivot(body, 0, 1.35, 0.05);
-  head.add(part(GEO.sphere(0.24), toon(0x0d1f22), 0, 0, 0));
-  eyes(head, 0xa8fff0, 0.02, 0.2, 0.08, 0.045);
+  const c = newCharacter(0xa8fff0, 1.0, 0.0), { B, root } = c, robe = def.color;
+  const body = pivot(root, 0, 0.35, 0);
+  put(B, body, tattered(0.16, 0.55, 1.45, 11, 18), robe, { p: [0, 0.6, 0], layer: 'clear' });
+  put(B, body, tattered(0.12, 0.42, 1.2, 12, 14), 0x1a4a48, { p: [0, 0.75, 0.02], layer: 'clear' });
+  const head = pivot(body, 0, 1.38, 0.04);
+  put(B, head, GEO.sphere(0.26, 14, 10, 0), robe, { s: [1, 1.1, 1.05], layer: 'clear' });
+  put(B, head, GEO.sphere(0.19, 12, 10), 0x050a0c, { p: [0, -0.02, 0.06], outline: false });
+  eyes(B, head, 0xa8fff0, 0.0, 0.22, 0.07, 0.035, 5);
   const arms = [];
   for (const s of [-1, 1]) {
-    const sh = pivot(body, 0.3 * s, 1.1, 0.1);
-    const sleeve = part(GEO.cone(0.12, 0.6, 7), robe, 0, -0.25, 0.1, 0);
-    sleeve.rotation.x = Math.PI - 0.6;
-    sh.add(sleeve);
+    const sh = pivot(body, 0.3 * s, 1.12, 0.1);
+    put(B, sh, GEO.cone(0.13, 0.62, 10, true), robe, { p: [0, -0.24, 0.12], r: [Math.PI - 0.7, 0, 0], layer: 'clear' });
+    for (let k = -1; k <= 1; k++) limb(B, sh, [0, -0.42, 0.3], [k * 0.04, -0.55, 0.42], 0.012, 0.008, 0xd8e8e0, { outline: false });
     arms.push(sh);
   }
-  const orb = glowSprite(0x7fffe0, 0.8, 0.8);
-  orb.position.set(0, 0.95, 0.5);
+  const orb = glowSprite(0x7fffe0, 0.8, 0.9);
+  orb.position.set(0, 0.95, 0.55);
   body.add(orb);
-  return { root, rig: { body, head, arms, orb }, mats: [robe] };
+  return finishCharacter(c, { rig: { body, head, arms, orb } });
 }
 
-function buildBrute(def, scale = 1) {
-  const root = new THREE.Group(), body = pivot(root, 0, 0, 0);
-  const skin = toon(def.color), iron = toon(0x3d3a3a), hide = toon(0x4a2a1a), horn = toon(0xe8dcc0);
+function buildBrute(def) {
+  const c = newCharacter(0xffb070, 0.5, 0.026), { B, root } = c, skin = def.color, iron = 0x3d3a3a, hide = 0x4a2a1a, horn = 0xe8dcc0;
+  const body = pivot(root, 0, 0, 0);
   const legs = [];
   for (const s of [-1, 1]) {
     const hip = pivot(body, 0.3 * s, 0.75, 0);
-    hip.add(part(GEO.cyl(0.18, 0.15, 0.7), hide, 0, -0.35, 0));
+    limb(B, hip, [0, 0, 0], [0.02 * s, -0.38, 0], 0.17, 0.15, hide);
+    limb(B, hip, [0.02 * s, -0.38, 0], [0, -0.72, 0.03], 0.14, 0.13, skin);
+    put(B, hip, GEO.box(0.24, 0.1, 0.32), iron, { p: [0, -0.74, 0.06], layer: 'metal' });
     legs.push(hip);
   }
   const torso = pivot(body, 0, 0.8, 0);
-  const chest = part(GEO.box(1.0, 0.85, 0.65), skin, 0, 0.5, 0);
-  torso.add(chest);
-  torso.add(part(GEO.sphere(0.42, 12, 10), skin, 0, 0.3, 0.2));
-  torso.add(part(GEO.box(1.1, 0.18, 0.7), iron, 0, 0.05, 0));
-  const head = pivot(torso, 0, 1.1, 0.15);
-  head.add(part(GEO.sphere(0.25), skin, 0, 0, 0));
-  head.add(part(GEO.cyl(0.28, 0.28, 0.22, 10), iron, 0, 0.1, 0));
+  put(B, torso, GEO.lathe([[0, 0], [0.42, 0.02], [0.5, 0.3], [0.56, 0.62], [0.4, 0.86], [0, 0.9]], 18), skin, { s: [1.05, 1, 0.85] });
+  put(B, torso, GEO.sphere(0.36, 14, 10), skin, { p: [0, 0.3, 0.22] });
+  put(B, torso, GEO.torus(0.48, 0.06, 6, 20), hide, { p: [0, 0.08, 0], r: [Math.PI / 2, 0, 0], s: [1.05, 0.85, 1] });
+  for (let k = -1; k <= 1; k++) put(B, torso, GEO.sphere(0.06, 8, 6), horn, { p: [k * 0.15, 0.06, 0.42] });
   for (const s of [-1, 1]) {
-    const h = part(GEO.cone(0.08, 0.42, 6), horn, 0.3 * s, 0.25, 0);
-    h.rotation.z = -0.9 * s;
-    head.add(h);
+    put(B, torso, GEO.dome(0.26, 12, 6), iron, { p: [0.55 * s, 0.78, 0], r: [0, 0, -0.6 * s], layer: 'metal' });
+    for (let k = 0; k < 3; k++) put(B, torso, GEO.cone(0.045, 0.22, 6), 0x9a9690, { p: [0.62 * s, 0.9 - k * 0.04, -0.1 + k * 0.1], r: [0, 0, -0.9 * s] });
   }
-  eyes(head, 0xffb02a, -0.02, 0.22, 0.09);
+  const head = pivot(torso, 0, 0.98, 0.18);
+  put(B, head, GEO.sphere(0.24, 14, 10), skin, { s: [1.05, 0.95, 1] });
+  put(B, head, GEO.box(0.3, 0.12, 0.2), skin, { p: [0, -0.12, 0.1] });
+  for (const s of [-1, 1]) put(B, head, GEO.cone(0.035, 0.14, 6), horn, { p: [0.1 * s, -0.08, 0.2], r: [-0.4, 0, -0.2 * s] });
+  put(B, head, GEO.dome(0.27, 14, 6), iron, { p: [0, 0.03, -0.01], layer: 'metal' });
+  for (const s of [-1, 1]) hornTube(B, head, [[0.2 * s, 0.1, 0], [0.38 * s, 0.22, -0.05], [0.44 * s, 0.45, -0.12], [0.38 * s, 0.6, -0.2]], 0.07, 0.01, horn, { steps: 5 });
+  eyes(B, head, 0xffb02a, 0.0, 0.21, 0.08, 0.03, 3);
   const arms = [];
   for (const s of [-1, 1]) {
-    const sh = pivot(torso, 0.6 * s, 0.75, 0);
-    sh.add(part(GEO.cyl(0.16, 0.13, 0.75), skin, 0, -0.38, 0));
-    sh.add(part(GEO.sphere(0.17, 10, 8), skin, 0, -0.8, 0));
+    const sh = pivot(torso, 0.62 * s, 0.72, 0);
+    limb(B, sh, [0, 0, 0], [0.05 * s, -0.42, 0.04], 0.16, 0.13, skin);
+    limb(B, sh, [0.05 * s, -0.42, 0.04], [0.02 * s, -0.8, 0.1], 0.13, 0.11, skin);
+    put(B, sh, GEO.cyl(0.15, 0.14, 0.18, 10), iron, { p: [0.04 * s, -0.6, 0.07], layer: 'metal' });
+    put(B, sh, GEO.sphere(0.16, 10, 8), skin, { p: [0.02 * s, -0.86, 0.1] });
     arms.push(sh);
   }
-  const club = pivot(arms[1], 0, -0.82, 0.05);
-  club.add(part(GEO.cyl(0.07, 0.1, 1.2, 8), hide, 0, 0, 0.5).rotateX(Math.PI / 2));
-  club.add(part(GEO.sphere(0.24, 10, 8), iron, 0, 0, 1.1));
-  root.scale.setScalar(scale);
-  return { root, rig: { body, torso, head, legs, arms, weapon: club }, mats: [skin, iron, hide] };
+  const club = pivot(arms[1], 0.02, -0.86, 0.1);
+  limb(B, club, [0, 0, -0.1], [0, 0.1, 1.0], 0.06, 0.09, 0x5a3a22);
+  put(B, club, GEO.sphere(0.22, 12, 10), iron, { p: [0, 0.11, 1.05], layer: 'metal' });
+  for (let k = 0; k < 8; k++) {
+    const a = (k / 8) * Math.PI * 2;
+    put(B, club, GEO.cone(0.04, 0.16, 6), 0x9a9690, { p: [Math.cos(a) * 0.2, 0.11 + Math.sin(a) * 0.2, 1.05], r: [0, 0, a - Math.PI / 2] });
+  }
+  return finishCharacter(c, { rig: { body, torso, head, legs, arms, weapon: club } });
 }
 
 function buildImp(def) {
-  const root = new THREE.Group(), body = pivot(root, 0, 0.25, 0);
-  const skin = toon(def.color), dark = toon(0x3a0d12), horn = toon(0x2a1a14);
-  body.add(part(GEO.sphere(0.32, 12, 10), skin, 0, 0.6, 0));
-  const head = pivot(body, 0, 1.05, 0.05);
-  head.add(part(GEO.sphere(0.22), skin, 0, 0, 0));
+  const c = newCharacter(0xffc060, 0.6, 0.02), { B, root } = c, skin = def.color, dark = 0x3a0d12, horn = 0x2a1a14;
+  const body = pivot(root, 0, 0.25, 0);
+  put(B, body, GEO.sphere(0.3, 14, 10), skin, { p: [0, 0.6, 0], s: [1, 1.1, 0.9] });
+  put(B, body, GEO.sphere(0.2, 12, 8), 0xf0806a, { p: [0, 0.55, 0.14] });
   for (const s of [-1, 1]) {
-    const h = part(GEO.cone(0.06, 0.3, 6), horn, 0.14 * s, 0.2, -0.04);
-    h.rotation.z = -0.5 * s;
-    head.add(h);
+    limb(B, body, [0.12 * s, 0.35, 0], [0.16 * s, 0.0, 0.05], 0.06, 0.05, skin);
+    limb(B, body, [0.25 * s, 0.75, 0], [0.2 * s, 0.5, 0.35], 0.05, 0.04, skin);
   }
-  eyes(head, 0xffe14a, 0.02, 0.18, 0.08);
+  const head = pivot(body, 0, 1.05, 0.05);
+  put(B, head, GEO.sphere(0.21, 14, 10), skin);
+  for (const s of [-1, 1]) {
+    hornTube(B, head, [[0.12 * s, 0.14, -0.02], [0.22 * s, 0.3, -0.08], [0.2 * s, 0.46, -0.2]], 0.05, 0.005, horn, { steps: 4 });
+    put(B, head, GEO.cone(0.05, 0.2, 5), skin, { p: [0.22 * s, 0.03, -0.02], r: [0, 0, -1.2 * s] });
+  }
+  put(B, head, GEO.box(0.16, 0.03, 0.03), dark, { p: [0, -0.08, 0.19], outline: false });
+  eyes(B, head, 0xffe14a, 0.03, 0.17, 0.075, 0.035, 3.5);
   const wings = [];
   for (const s of [-1, 1]) {
-    const w = pivot(body, 0.18 * s, 0.75, -0.2);
-    const wing = batWing(0x5a1018, s);
-    wing.scale.setScalar(0.8);
-    wing.rotation.x = -Math.PI / 2 + 0.6;
-    w.add(wing);
+    const w = pivot(body, 0.18 * s, 0.78, -0.2);
+    put(B, w, GEO.extrude(wingShape(0.6, 0.3, 3), 0.01, 0), 0x5a1018, { r: [-Math.PI / 2 + 0.6, 0, 0], s: [s, 1, 1] });
     wings.push(w);
   }
-  const tail = part(GEO.cone(0.05, 0.6, 5), dark, 0, 0.35, -0.4);
-  tail.rotation.x = -1.2;
-  body.add(tail);
-  const orb = glowSprite(0xff7a2a, 0.9, 0.9);
-  orb.position.set(0, 0.7, 0.45);
+  hornTube(B, body, [[0, 0.4, -0.25], [0, 0.25, -0.5], [0, 0.35, -0.75], [0, 0.55, -0.85]], 0.04, 0.015, dark, { steps: 6 });
+  put(B, body, GEO.cone(0.07, 0.14, 4), dark, { p: [0, 0.6, -0.88], r: [0.3, 0, 0] });
+  put(B, body, GEO.sphere(0.12, 12, 8), 0xffa040, { p: [0, 0.6, 0.45], layer: 'glow', bright: 2.5 });
+  const orb = glowSprite(0xff7a2a, 1.0, 0.9);
+  orb.position.set(0, 0.6, 0.45);
   body.add(orb);
-  return { root, rig: { body, head, wings, orb }, mats: [skin, dark] };
+  return finishCharacter(c, { rig: { body, head, wings, orb } });
 }
 
 function buildTroll(def) {
-  const root = new THREE.Group(), body = pivot(root, 0, 0, 0);
-  const skin = toon(def.color), moss = toon(0x3f7a3a), stone = toon(0x8a8478), hide = toon(0x3a2a1a);
+  const c = newCharacter(0xb0ffb0, 0.45, 0.03), { B, root } = c, skin = def.color, moss = 0x3f7a3a, stone = 0x8a8478, hide = 0x3a2a1a;
+  const body = pivot(root, 0, 0, 0);
   const legs = [];
   for (const s of [-1, 1]) {
     const hip = pivot(body, 0.45 * s, 0.9, 0);
-    hip.add(part(GEO.cyl(0.26, 0.22, 0.9), skin, 0, -0.45, 0));
+    limb(B, hip, [0, 0, 0], [0.04 * s, -0.48, 0.02], 0.27, 0.23, skin);
+    limb(B, hip, [0.04 * s, -0.48, 0.02], [0, -0.86, 0.05], 0.22, 0.2, skin);
+    for (let k = -1; k <= 1; k++) put(B, hip, GEO.cone(0.05, 0.12, 5), 0xd8d0b8, { p: [k * 0.1, -0.88, 0.25], r: [Math.PI / 2, 0, 0] });
     legs.push(hip);
   }
   const torso = pivot(body, 0, 1.0, 0);
-  const trunk = part(GEO.sphere(1, 16, 12), skin, 0, 0.75, 0);
-  trunk.scale.set(1.15, 0.95, 0.9);
-  torso.add(trunk);
-  torso.add(part(GEO.box(1.5, 0.3, 1.0), hide, 0, 0.1, 0));
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2;
-    torso.add(part(GEO.sphere(0.28, 8, 6), moss, Math.cos(a) * 0.7, 1.4 + Math.sin(i) * 0.1, Math.sin(a) * 0.5 - 0.2, 0.05));
+  put(B, torso, GEO.sphere(1, 18, 14), skin, { p: [0, 0.75, 0], s: [1.15, 0.95, 0.9] });
+  put(B, torso, GEO.sphere(0.6, 14, 10), 0x8aa894, { p: [0, 0.5, 0.42], s: [1, 0.9, 0.7] });
+  put(B, torso, tattered(0.95, 1.0, 0.5, 5, 18), hide, { p: [0, 0.05, 0] });
+  for (let k = 0; k < 9; k++) {
+    const a = (k / 9) * Math.PI * 2;
+    put(B, torso, displace(GEO.ico(0.26, 1), 0.3, k), k % 3 ? moss : stone, { p: [Math.cos(a) * 0.7, 1.35 + Math.sin(k) * 0.12, Math.sin(a) * 0.45 - 0.3] });
   }
-  const head = pivot(torso, 0, 1.65, 0.65);
-  head.add(part(GEO.sphere(0.42), skin, 0, 0, 0));
-  head.add(part(GEO.box(0.5, 0.18, 0.3), skin, 0, -0.25, 0.25));
-  eyes(head, 0xffd84a, 0.06, 0.38, 0.15, 0.06);
-  for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * Math.PI * 2;
-    head.add(part(new THREE.DodecahedronGeometry(0.12), stone, Math.cos(a) * 0.33, 0.38, Math.sin(a) * 0.33, 0.05));
+  const head = pivot(torso, 0, 1.6, 0.68);
+  put(B, head, GEO.sphere(0.42, 16, 12), skin, { s: [1.05, 0.9, 1] });
+  put(B, head, GEO.box(0.55, 0.2, 0.32), skin, { p: [0, -0.24, 0.24] });
+  for (const s of [-1, 1]) put(B, head, GEO.cone(0.06, 0.3, 6), 0xf0e8d0, { p: [0.18 * s, -0.12, 0.42], r: [-0.3, 0, -0.3 * s] });
+  eyes(B, head, 0xffd84a, 0.08, 0.37, 0.15, 0.05, 3.5);
+  for (let k = 0; k < 6; k++) {
+    const a = (k / 6) * Math.PI * 2;
+    put(B, head, displace(GEO.ico(0.11, 0), 0.4, k + 20), stone, { p: [Math.cos(a) * 0.32, 0.38, Math.sin(a) * 0.32] });
   }
+  put(B, head, GEO.sphere(0.07, 8, 6), 0x5fe0ff, { p: [0, 0.48, 0.2], layer: 'glow', bright: 2.5 });
   const arms = [];
   for (const s of [-1, 1]) {
     const sh = pivot(torso, 1.05 * s, 1.15, 0.2);
-    sh.add(part(GEO.cyl(0.26, 0.22, 1.3), skin, 0, -0.65, 0));
-    sh.add(part(GEO.sphere(0.36, 10, 8), skin, 0, -1.35, 0));
+    limb(B, sh, [0, 0, 0], [0.1 * s, -0.7, 0.05], 0.28, 0.23, skin);
+    limb(B, sh, [0.1 * s, -0.7, 0.05], [0.05 * s, -1.3, 0.15], 0.23, 0.22, skin);
+    put(B, sh, GEO.sphere(0.36, 12, 10), skin, { p: [0.05 * s, -1.38, 0.15] });
+    put(B, sh, displace(GEO.ico(0.22, 1), 0.3, s + 9), moss, { p: [0, 0.05, -0.05] });
     arms.push(sh);
   }
-  return { root, rig: { body, torso, head, legs, arms }, mats: [skin, moss, hide] };
-}
-
-function dragonWing(color, side) {
-  const shape = new THREE.Shape();
-  shape.moveTo(0, 0);
-  shape.lineTo(1.2 * side, 0.9);
-  shape.lineTo(3.4 * side, 1.4);
-  shape.lineTo(3.0 * side, 0.2);
-  shape.lineTo(2.4 * side, -0.4);
-  shape.lineTo(1.6 * side, 0.05);
-  shape.lineTo(1.0 * side, -0.6);
-  shape.lineTo(0.4 * side, -0.4);
-  const m = new THREE.Mesh(new THREE.ShapeGeometry(shape), toon(color, { side: THREE.DoubleSide }));
-  m.castShadow = true;
-  return m;
+  return finishCharacter(c, { rig: { body, torso, head, legs, arms } });
 }
 
 function buildWyrm(def) {
-  const root = new THREE.Group(), body = pivot(root, 0, 0, 0);
-  const scale = toon(def.color), belly = toon(0xe8823a, { emissive: 0x401204 }), horn = toon(0xe6dcc0), membrane = 0x5a121c;
-  const mats = [scale, belly];
-  const trunk = part(GEO.sphere(1, 18, 14), scale, 0, 1.5, 0);
-  trunk.scale.set(1.5, 1.05, 2.0);
-  body.add(trunk);
-  const under = part(GEO.sphere(1, 14, 10), belly, 0, 1.2, 0.35, 0.03);
-  under.scale.set(1.15, 0.7, 1.6);
-  body.add(under);
-  for (const [x, z] of [[-0.95, 1.1], [0.95, 1.1], [-0.95, -1.1], [0.95, -1.1]]) {
-    body.add(part(GEO.cyl(0.3, 0.24, 1.1), scale, x, 0.55, z));
+  const c = newCharacter(0xffa060, 0.6, 0.03), { B, root } = c;
+  const scale = new THREE.Color(def.color).multiplyScalar(0.8).getHex(), dark = 0x4a0c14, belly = 0xd8743a, horn = 0xe6dcc0, membrane = 0x5a121c;
+  const body = pivot(root, 0, 0, 0);
+  put(B, body, GEO.sphere(1, 20, 16), scale, { p: [0, 1.55, -0.1], s: [1.45, 1.05, 2.0] });
+  put(B, body, GEO.sphere(1, 16, 12), belly, { p: [0, 1.25, 0.25], s: [1.1, 0.68, 1.6] });
+  for (let k = 0; k < 6; k++) put(B, body, GEO.box(0.9 - k * 0.06, 0.05, 0.12), 0xffb060, { p: [0, 0.62 + k * 0.03, 1.2 - k * 0.42], layer: 'glow', bright: 1.6, outline: false });
+  for (let k = 0; k < 7; k++) put(B, body, GEO.cone(0.13, 0.42, 6), dark, { p: [0, 2.55 - Math.abs(k - 2) * 0.05, 1.2 - k * 0.45], r: [-0.35, 0, 0] });
+  // overlapping armour plates along the spine and flanks
+  for (let k = 0; k < 6; k++) {
+    for (const sx of [-1, 1]) put(B, body, GEO.sphere(0.42, 10, 6), dark, { p: [0.55 * sx, 2.25 - Math.abs(k - 2) * 0.06, 1.1 - k * 0.48], r: [0.2, 0, -0.55 * sx], s: [1.1, 0.28, 0.9] });
   }
-  // neck chain up to the head
-  const neck = pivot(body, 0, 2.0, 1.6);
-  for (let i = 0; i < 3; i++) neck.add(part(GEO.sphere(0.55 - i * 0.07, 12, 10), scale, 0, i * 0.45, i * 0.35));
-  const head = pivot(neck, 0, 1.45, 1.25);
-  head.add(part(GEO.box(0.95, 0.6, 1.1), scale, 0, 0, 0));
-  head.add(part(GEO.box(0.7, 0.35, 0.7), scale, 0, -0.05, 0.75));
-  const jaw = pivot(head, 0, -0.3, 0.25);
-  jaw.add(part(GEO.box(0.75, 0.18, 1.05), belly, 0, 0, 0.35));
+  for (const [x, z] of [[-0.95, 1.0], [0.95, 1.0], [-0.95, -1.15], [0.95, -1.15]]) {
+    limb(B, body, [x, 1.3, z], [x * 1.1, 0.55, z + 0.15], 0.32, 0.26, scale);
+    limb(B, body, [x * 1.1, 0.55, z + 0.15], [x * 1.08, 0.08, z + 0.3], 0.24, 0.2, scale);
+    for (let k = -1; k <= 1; k++) put(B, body, GEO.cone(0.06, 0.2, 6), horn, { p: [x * 1.08 + k * 0.12, 0.06, z + 0.55], r: [Math.PI / 2, 0, 0] });
+  }
+  const neck = pivot(body, 0, 2.05, 1.55);
+  for (let i = 0; i < 4; i++) {
+    put(B, neck, GEO.sphere(0.56 - i * 0.06, 14, 10), scale, { p: [0, i * 0.36, i * 0.3] });
+    put(B, neck, GEO.cone(0.09, 0.3, 6), dark, { p: [0, i * 0.36 + 0.48 - i * 0.05, i * 0.3 - 0.2], r: [-0.5, 0, 0] });
+  }
+  const head = pivot(neck, 0, 1.45, 1.2);
+  const flat = [1, 1, 0.62];
+  put(B, head, GEO.sphere(0.5, 18, 14), scale, { s: [0.95, 0.72, 1.1] });
+  // a long tapering snout, flattened top to bottom, with a rounded nose
+  put(B, head, GEO.cyl(0.25, 0.42, 1.0, 14), scale, { p: [0, -0.04, 0.72], r: [Math.PI / 2, 0, 0], s: flat });
+  put(B, head, GEO.sphere(0.26, 14, 10), scale, { p: [0, -0.04, 1.22], s: [1, 0.62, 0.8] });
+  put(B, head, GEO.cyl(0.1, 0.22, 0.9, 8), dark, { p: [0, 0.18, 0.7], r: [Math.PI / 2 + 0.12, 0, 0], s: [1, 1, 0.3] });
   for (const s of [-1, 1]) {
-    const h = part(GEO.cone(0.13, 0.9, 6), horn, 0.35 * s, 0.4, -0.35);
-    h.rotation.x = -1.1;
-    h.rotation.z = -0.3 * s;
-    head.add(h);
+    put(B, head, GEO.sphere(0.045, 8, 6), 0xff7a2a, { p: [0.11 * s, 0.06, 1.38], layer: 'glow', bright: 3 });
+    // heavy brow ridges sweeping back over the eyes, cheek spines
+    put(B, head, GEO.cone(0.13, 0.55, 7), dark, { p: [0.24 * s, 0.26, 0.3], r: [-Math.PI / 2 + 0.25, 0, -0.25 * s] });
+    for (let k = 0; k < 3; k++) put(B, head, GEO.cone(0.05, 0.32 - k * 0.06, 6), dark, { p: [0.4 * s, -0.12 - k * 0.08, -0.05 - k * 0.12], r: [-Math.PI / 2 + 0.2, 0, -(0.9 + k * 0.15) * s] });
+    for (let k = 0; k < 5; k++) put(B, head, GEO.cone(0.03, 0.11, 4), 0xfff4e0, { p: [(0.2 - k * 0.012) * s * (1 + k * 0.12), -0.21, 1.2 - k * 0.15], r: [Math.PI, 0, 0], outline: false });
+    hornTube(B, head, [[0.3 * s, 0.25, -0.15], [0.5 * s, 0.5, -0.55], [0.55 * s, 0.62, -0.95], [0.45 * s, 0.82, -1.3]], 0.14, 0.012, horn, { steps: 6 });
+    hornTube(B, head, [[0.42 * s, 0.0, -0.1], [0.68 * s, -0.06, -0.42], [0.82 * s, 0.04, -0.68]], 0.07, 0.01, horn, { steps: 4 });
   }
-  eyes(head, 0xffe14a, 0.15, 0.56, 0.3, 0.08);
+  for (let k = 0; k < 3; k++) put(B, head, GEO.cone(0.07, 0.3 - k * 0.05, 6), dark, { p: [0, 0.34 - k * 0.04, -0.1 - k * 0.22], r: [-0.9, 0, 0] });
+  eyes(B, head, 0xffe14a, 0.2, 0.42, 0.26, 0.07, 4);
+  const jaw = pivot(head, 0, -0.26, 0.15);
+  put(B, jaw, GEO.cyl(0.2, 0.36, 1.05, 12), belly, { p: [0, -0.02, 0.5], r: [Math.PI / 2, 0, 0], s: [1, 1, 0.34] });
+  for (let k = 0; k < 6; k++) {
+    for (const s of [-1, 1]) put(B, jaw, GEO.cone(0.032, 0.12, 4), 0xfff4e0, { p: [(0.15 + k * 0.025) * s, 0.08, 0.92 - k * 0.13], outline: false });
+  }
   const mouthGlow = glowSprite(0xff7a2a, 1.4, 0.6);
-  mouthGlow.position.set(0, -0.2, 1.2);
+  mouthGlow.position.set(0, -0.15, 1.15);
   head.add(mouthGlow);
   const wings = [];
   for (const s of [-1, 1]) {
     const w = pivot(body, 0.8 * s, 2.3, 0.2);
-    const wing = dragonWing(membrane, s);
-    wing.rotation.x = -0.5;
-    w.add(wing);
-    mats.push(wing.material);
+    limb(B, w, [0, 0, 0], [1.4 * s, 1.1, -0.2], 0.12, 0.08, scale);
+    limb(B, w, [1.4 * s, 1.1, -0.2], [3.4 * s, 1.5, -0.5], 0.08, 0.05, scale);
+    for (const [fx, fy, fz] of [[3.0, 0.2, -0.6], [2.4, -0.4, -0.5], [1.6, -0.5, -0.35]]) limb(B, w, [1.4 * s, 1.1, -0.2], [fx * s, fy, fz], 0.05, 0.02, scale);
+    const sh = new THREE.Shape();
+    sh.moveTo(0, 0);
+    sh.lineTo(1.4, 1.1);
+    sh.lineTo(3.4, 1.5);
+    sh.quadraticCurveTo(3.1, 0.8, 3.0, 0.2);
+    sh.quadraticCurveTo(2.7, -0.05, 2.4, -0.4);
+    sh.quadraticCurveTo(2.0, -0.3, 1.6, -0.5);
+    sh.quadraticCurveTo(0.9, -0.5, 0.4, -0.35);
+    put(B, w, GEO.extrude(sh, 0.02, 0), membrane, { s: [s, 1, 1], p: [0, 0, -0.3], r: [-0.12, 0, 0], layer: 'clear' });
     wings.push(w);
   }
-  const tail = pivot(body, 0, 1.3, -1.8);
+  const tail = pivot(body, 0, 1.35, -1.9);
   let seg = tail;
   const tails = [];
-  for (let i = 0; i < 5; i++) {
-    const p = pivot(seg, 0, 0, i === 0 ? 0 : -0.75);
-    const c = part(GEO.cone(0.42 - i * 0.07, 0.9, 8), scale, 0, 0, -0.35);
-    c.rotation.x = -Math.PI / 2;
-    p.add(c);
+  for (let i = 0; i < 6; i++) {
+    const p = pivot(seg, 0, -0.04, i === 0 ? 0 : -0.66);
+    limb(B, p, [0, 0, 0], [0, -0.04, -0.7], 0.4 - i * 0.06, 0.34 - i * 0.06, scale);
+    put(B, p, GEO.cone(0.08, 0.26, 6), dark, { p: [0, 0.33 - i * 0.05, -0.3], r: [-0.6, 0, 0] });
+    if (i === 5) put(B, p, GEO.extrude(bladeShape(0.6, 0.4, 0.3), 0.04, 0.01), dark, { p: [0, 0, -0.65], r: [-Math.PI / 2, 0, 0] });
     tails.push(p);
     seg = p;
   }
-  return { root, rig: { body, neck, head, jaw, wings, tails, mouthGlow }, mats };
+  return finishCharacter(c, { rig: { body, neck, head, jaw, wings, tails, mouthGlow } });
 }
 
 function buildEnemyModel(type) {
@@ -493,133 +834,173 @@ function buildEnemyModel(type) {
   }
 }
 
-// ---- Props --------------------------------------------------------------------------------------
+// ---- Props (added to a static builder, merged per room) -----------------------------------------------
+// Each prop builder takes the room builder, a pivot and a placement matrix.
 
-function buildPillar(mat, h) {
-  const g = new THREE.Group();
-  const base = part(GEO.box(1.15, 0.3, 1.15), mat, 0, 0.15, 0, 0.03);
-  const shaft = part(GEO.cyl(0.42, 0.46, h, 14), mat, 0, 0.3 + h / 2, 0, 0.03);
-  g.add(base, shaft);
-  if (h > 2) g.add(part(GEO.box(1.05, 0.28, 1.05), mat, 0, 0.3 + h + 0.14, 0, 0.03));
-  base.receiveShadow = shaft.receiveShadow = true;
-  return g;
-}
+const STONE = { crypt: 0x8a8296, cave: 0x5d6f6a, forge: 0x5a4a44 };
 
-function buildBrazier(color) {
-  const g = new THREE.Group();
-  const bronze = toon(0x8a5a2a);
-  for (let i = 0; i < 3; i++) {
-    const a = (i / 3) * Math.PI * 2;
-    const leg = part(GEO.cyl(0.04, 0.04, 1.0, 5), bronze, Math.cos(a) * 0.22, 0.5, Math.sin(a) * 0.22, 0.1);
-    leg.rotation.z = Math.cos(a) * 0.25;
-    leg.rotation.x = -Math.sin(a) * 0.25;
-    g.add(leg);
+const placeAt = (x, z, rot = 0, s = 1) => new THREE.Matrix4().compose(
+  new THREE.Vector3(x, 0, z), new THREE.Quaternion().setFromAxisAngle(UP, rot), new THREE.Vector3(s, s, s),
+);
+
+function fluted(r, h, flutes = 16) {
+  const g = new THREE.CylinderGeometry(r, r * 1.04, h, flutes * 3, 2, false);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = p.getZ(i), rr = Math.hypot(x, z);
+    if (rr < r * 0.5) continue;
+    const a = Math.atan2(z, x), k = 1 - 0.07 * Math.pow(Math.max(0, Math.cos(a * flutes)), 2);
+    p.setX(i, x * k);
+    p.setZ(i, z * k);
   }
-  const pts = [[0.05, 0], [0.38, 0.05], [0.48, 0.28], [0.44, 0.3]].map(([x, y]) => new THREE.Vector2(x, y));
-  const bowl = part(new THREE.LatheGeometry(pts, 14), bronze, 0, 0.98, 0, 0.05);
-  g.add(bowl);
-  const flames = [];
-  for (let i = 0; i < 3; i++) {
-    const f = glowSprite(i === 0 ? 0xffe0a0 : color, 0.9 - i * 0.1, 0.9);
-    f.position.y = 1.35 + i * 0.25;
-    g.add(f);
-    flames.push(f);
+  g.computeVertexNormals();
+  return g;
+}
+
+function propPillar(B, pv, at, stone, h, broken) {
+  const sh = (y) => 0.75 + Math.min(1, y / 3) * 0.3;
+  put(B, pv, GEO.box(1.15, 0.22, 1.15), stone, { p: [0, 0.11, 0], at, shade: sh });
+  put(B, pv, GEO.lathe([[0.52, 0], [0.55, 0.06], [0.5, 0.12], [0.46, 0.14]], 24), stone, { p: [0, 0.22, 0], at });
+  if (broken) {
+    const top = fluted(0.42, h, 16), p = top.attributes.position, rnd = mulberry32(Math.round(h * 100));
+    for (let i = 0; i < p.count; i++) if (p.getY(i) > h / 2 - 0.01) p.setY(i, p.getY(i) - rnd() * 0.45);
+    top.computeVertexNormals();
+    put(B, pv, top, stone, { p: [0, 0.36 + h / 2, 0], at, shade: sh });
+    for (let k = 0; k < 3; k++) {
+      const a = k * 2.2 + h;
+      put(B, pv, displace(GEO.ico(0.2 + k * 0.05, 0), 0.3, k), stone, { p: [Math.cos(a) * 0.85, 0.12, Math.sin(a) * 0.85], at });
+    }
+  } else {
+    put(B, pv, fluted(0.42, h, 16), stone, { p: [0, 0.36 + h / 2, 0], at, shade: sh });
+    put(B, pv, GEO.lathe([[0.44, 0], [0.5, 0.08], [0.6, 0.2], [0.62, 0.26]], 24), stone, { p: [0, 0.36 + h, 0], at });
+    put(B, pv, GEO.box(1.3, 0.22, 1.3), stone, { p: [0, 0.36 + h + 0.36, 0], at });
   }
-  g.userData.flames = flames;
-  return g;
 }
 
-function buildUrn() {
-  const g = new THREE.Group();
-  const clay = toon(0xb0603a), band = toon(0x2a1a14);
-  const pts = [[0.0, 0], [0.22, 0.02], [0.32, 0.25], [0.3, 0.5], [0.16, 0.66], [0.18, 0.78], [0.0, 0.78]]
-    .map(([x, y]) => new THREE.Vector2(x, y));
-  g.add(part(new THREE.LatheGeometry(pts, 14), clay, 0, 0, 0, 0.05));
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.025, 6, 18), band);
-  ring.rotation.x = Math.PI / 2;
-  ring.position.y = 0.36;
-  g.add(ring);
-  return g;
+function propRock(B, pv, at, color, s, seed) {
+  put(B, pv, displace(GEO.ico(0.6, 1), 0.38, seed), color, { p: [0, 0.32 * s, 0], s: [s, s * 0.8, s * 0.9], at, shade: (y) => 0.7 + y * 0.4 });
+  put(B, pv, displace(GEO.ico(0.3, 0), 0.4, seed + 1), color, { p: [0.55 * s, 0.12, 0.3 * s], s, at });
 }
 
-function buildCrystal(color) {
-  const g = new THREE.Group();
-  const mat = toon(color, { emissive: color, emissiveIntensity: 0.55 });
-  for (let i = 0; i < 4; i++) {
-    const c = part(new THREE.OctahedronGeometry(0.28), mat, (i % 2 ? 0.2 : -0.18) * (i > 1 ? -1 : 1), 0.5 + i * 0.05, (i > 1 ? 0.15 : -0.12), 0.05);
-    c.scale.set(0.7, 2.2 - i * 0.3, 0.7);
-    c.rotation.z = (i - 1.5) * 0.25;
-    g.add(c);
+function propCrystal(B, pv, at, color, seed) {
+  const rnd = mulberry32(seed);
+  for (let k = 0; k < 5; k++) {
+    const a = rnd() * Math.PI * 2, d = k ? 0.18 + rnd() * 0.25 : 0, h = k ? 0.6 + rnd() * 0.6 : 1.5;
+    put(B, pv, GEO.cone(0.16 + (k ? 0 : 0.08), h, 6), color, {
+      p: [Math.cos(a) * d, h / 2, Math.sin(a) * d], r: [Math.sin(a) * 0.4 * (k ? 1 : 0.2), 0, Math.cos(a) * 0.4 * (k ? 1 : 0.2)], at, layer: 'glow', bright: 0.9 + rnd() * 0.6,
+    });
   }
-  const glow = glowSprite(color, 2.6, 0.45);
-  glow.position.y = 0.8;
-  g.add(glow);
-  return g;
+  put(B, pv, displace(GEO.ico(0.42, 0), 0.4, seed), 0x2a3a38, { p: [0, 0.1, 0], s: [1, 0.4, 1], at });
 }
 
-function buildRock(mat, s) {
-  const r = part(new THREE.DodecahedronGeometry(0.6), mat, 0, 0.35 * s, 0, 0.04);
-  r.scale.set(s, s * 0.8, s * 0.9);
-  r.rotation.y = Math.random() * Math.PI;
-  return r;
+function propStatue(B, pv, at, stone) {
+  put(B, pv, GEO.box(1.0, 0.5, 1.0), stone, { p: [0, 0.25, 0], at });
+  put(B, pv, GEO.lathe([[0.4, 0], [0.42, 0.05], [0.38, 0.1]], 20), stone, { p: [0, 0.5, 0], at });
+  put(B, pv, GEO.lathe([[0.38, 0], [0.36, 0.5], [0.27, 1.0], [0.2, 1.35], [0.12, 1.45], [0, 1.47]], 20), stone, { p: [0, 0.6, 0], at, shade: (y) => 0.7 + y * 0.15 });
+  put(B, pv, GEO.sphere(0.2, 14, 10), stone, { p: [0, 2.17, 0.03], at });
+  put(B, pv, GEO.cone(0.27, 0.38, 14, true), stone, { p: [0, 2.22, -0.02], r: [-0.25, 0, 0], at });
+  for (const s of [-1, 1]) {
+    const w = new THREE.Shape();
+    w.moveTo(0, 0);
+    w.quadraticCurveTo(0.5, 0.6, 0.35, 1.3);
+    w.quadraticCurveTo(0.25, 0.7, 0.05, 0.5);
+    put(B, pv, GEO.extrude(w, 0.06, 0.02), stone, { p: [0.12 * s, 1.35, -0.2], s: [s, 1, 1], r: [0.3, 0, 0], at });
+  }
 }
 
-function buildStatue(mat) {
-  const g = new THREE.Group();
-  g.add(part(GEO.box(1.0, 0.6, 1.0), mat, 0, 0.3, 0, 0.03));
-  g.add(part(GEO.cyl(0.25, 0.45, 1.5, 10), mat, 0, 1.35, 0, 0.04));
-  g.add(part(GEO.sphere(0.26), mat, 0, 2.25, 0.05, 0.04));
-  const wing = part(GEO.box(0.12, 1.0, 0.6), mat, 0.3, 1.8, -0.2, 0.04);
-  wing.rotation.z = -0.4;
-  const wing2 = wing.clone();
-  wing2.position.x = -0.3;
-  wing2.rotation.z = 0.4;
-  g.add(wing, wing2);
-  return g;
+function propBrazier(B, pv, at) {
+  const bronze = 0x9a6a2a;
+  for (let k = 0; k < 3; k++) {
+    const a = (k / 3) * Math.PI * 2, x = Math.cos(a), z = Math.sin(a);
+    put(B, pv, GEO.tube([[x * 0.35, 0, z * 0.35], [x * 0.2, 0.45, z * 0.2], [x * 0.3, 0.85, z * 0.3], [x * 0.38, 1.0, z * 0.38]], 0.035, 12, 5), bronze, { at, layer: 'metal' });
+  }
+  put(B, pv, GEO.lathe([[0.06, 0], [0.32, 0.04], [0.46, 0.24], [0.5, 0.32], [0.46, 0.33]], 20), bronze, { p: [0, 0.96, 0], at, layer: 'metal' });
+  put(B, pv, GEO.torus(0.48, 0.03, 6, 24), 0xd8a050, { p: [0, 1.28, 0], r: [Math.PI / 2, 0, 0], at, layer: 'metal' });
+  for (let k = 0; k < 7; k++) {
+    const a = k * 0.9;
+    put(B, pv, displace(GEO.ico(0.09, 0), 0.4, k), 0xff6a1a, { p: [Math.cos(a) * 0.2 * (k % 3) * 0.6, 1.24, Math.sin(a) * 0.2 * (k % 3) * 0.6], at, layer: 'glow', bright: 1.5 });
+  }
 }
 
-function buildFountain() {
-  const g = new THREE.Group();
-  const stone = toon(0x8a8296);
-  const pts = [[0, 0], [1.1, 0], [1.2, 0.45], [1.05, 0.5], [0.95, 0.2], [0, 0.2]].map(([x, y]) => new THREE.Vector2(x, y));
-  g.add(part(new THREE.LatheGeometry(pts, 24), stone, 0, 0, 0, 0.03));
-  g.add(part(GEO.cyl(0.14, 0.2, 1.3, 10), stone, 0, 0.8, 0, 0.05));
-  const water = new THREE.Mesh(new THREE.CircleGeometry(1.0, 24), new THREE.MeshBasicMaterial({ color: 0x4fd0ff, transparent: true, opacity: 0.85 }));
-  water.rotation.x = -Math.PI / 2;
-  water.position.y = 0.4;
-  g.add(water);
-  const glow = glowSprite(0x7cd8ff, 3, 0.6);
-  glow.position.y = 1.2;
-  g.add(glow);
-  g.userData.water = water;
-  return g;
+function propUrn(B, pv, at) {
+  const band = (y) => (y > 0.33 && y < 0.42) || (y > 0.6 && y < 0.64) ? 0.25 : 1;
+  put(B, pv, GEO.lathe([[0, 0], [0.18, 0.01], [0.3, 0.22], [0.32, 0.42], [0.2, 0.62], [0.12, 0.7], [0.15, 0.8], [0.13, 0.82], [0, 0.82]], 18), 0xb0603a, { at, shade: band });
+  for (const s of [-1, 1]) put(B, pv, GEO.torus(0.09, 0.022, 5, 10, Math.PI), 0xa0502e, { p: [0.2 * s, 0.62, 0], r: [0, 0, s > 0 ? -1.2 : 1.2 + Math.PI], at });
 }
 
-function buildMerchant() {
-  const g = new THREE.Group();
-  const robe = toon(0x3a2050), wood = toon(0x5a3a22);
-  g.add(part(GEO.cone(0.55, 1.6, 10), robe, 0, 0.8, -0.6));
-  g.add(part(GEO.sphere(0.28), toon(0x1a1020), 0, 1.65, -0.6));
-  const hood = part(GEO.cone(0.34, 0.5, 10), robe, 0, 1.85, -0.65);
-  g.add(hood);
-  eyes(g, 0xffd166, 1.66, -0.38, 0.09);
-  g.add(part(GEO.box(2.0, 0.12, 0.8), wood, 0, 0.85, 0.25));
-  for (const x of [-0.85, 0.85]) g.add(part(GEO.box(0.12, 0.8, 0.7), wood, x, 0.4, 0.25));
-  const lamp = glowSprite(0xffc777, 2.2, 0.5);
-  lamp.position.set(0, 1.4, 0.2);
-  g.add(lamp);
-  return g;
+function propFountain(B, pv, at) {
+  const stone = 0x9a92a6;
+  put(B, pv, GEO.lathe([[0, 0], [1.15, 0], [1.25, 0.12], [1.25, 0.45], [1.12, 0.5], [1.05, 0.25], [0, 0.25]], 32), stone, { at });
+  put(B, pv, GEO.lathe([[0.2, 0], [0.16, 0.6], [0.12, 1.0], [0.2, 1.05]], 16), stone, { p: [0, 0.25, 0], at });
+  put(B, pv, GEO.lathe([[0, 0], [0.45, 0.02], [0.5, 0.18], [0.44, 0.2], [0, 0.08]], 20), stone, { p: [0, 1.28, 0], at });
+  put(B, pv, GEO.sphere(0.1, 10, 8), 0xffe6a0, { p: [0, 1.55, 0], at, layer: 'glow', bright: 2 });
 }
 
-function buildDoor(mat) {
-  const g = new THREE.Group();
-  for (const s of [-1, 1]) g.add(part(GEO.box(0.5, 3.0, 0.7), mat, 1.15 * s, 1.5, 0, 0.03));
-  const arch = part(new THREE.TorusGeometry(1.15, 0.28, 8, 16, Math.PI), mat, 0, 3.0, 0, 0.03);
-  g.add(arch);
-  const leafMat = new THREE.MeshBasicMaterial({ color: 0x120a10 });
-  const leaf = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 3.6), leafMat);
-  leaf.position.set(0, 1.8, -0.05);
-  g.add(leaf);
-  g.userData.leaf = leaf;
-  return g;
+function propMerchant(B, pv, at) {
+  const robe = 0x3a2050, wood = 0x5a3a22, cloth = 0x6a2440;
+  put(B, pv, GEO.lathe([[0, 0], [0.55, 0], [0.42, 0.8], [0.3, 1.5], [0, 1.6]], 16), robe, { p: [0, 0, -0.7], at });
+  put(B, pv, GEO.cone(0.36, 0.6, 14, true), robe, { p: [0, 1.75, -0.72], r: [-0.2, 0, 0], at });
+  put(B, pv, GEO.sphere(0.24, 12, 10), 0x0a0610, { p: [0, 1.62, -0.66], at, outline: false });
+  for (const s of [-1, 1]) put(B, pv, GEO.sphere(0.035, 8, 6), 0xffd166, { p: [0.08 * s, 1.64, -0.45], at, layer: 'glow', bright: 3 });
+  put(B, pv, GEO.box(2.1, 0.1, 0.9), wood, { p: [0, 0.85, 0.2], at });
+  put(B, pv, GEO.box(2.2, 0.02, 0.6), cloth, { p: [0, 0.91, 0.2], at, outline: false });
+  for (const x of [-0.9, 0.9]) put(B, pv, GEO.box(0.12, 0.8, 0.12), wood, { p: [x, 0.4, 0.2], at });
+  const goods = [[-0.6, 0x7cd8ff], [-0.2, 0xff5d6c], [0.25, 0xff9b3a], [0.6, 0xc9a8ff]];
+  for (const [x, col] of goods) {
+    put(B, pv, GEO.lathe([[0, 0], [0.08, 0.01], [0.09, 0.1], [0.04, 0.16], [0.04, 0.22], [0, 0.22]], 10), col, { p: [x, 0.92, 0.25], at, layer: 'glow', bright: 1.3 });
+  }
+}
+
+function propCandles(B, pv, at, seed) {
+  const rnd = mulberry32(seed);
+  for (let k = 0; k < 6; k++) {
+    const x = (rnd() - 0.5) * 0.7, z = (rnd() - 0.5) * 0.5, h = 0.15 + rnd() * 0.35;
+    put(B, pv, GEO.cyl(0.04, 0.045, h, 8), 0xe8dcc0, { p: [x, h / 2, z], at, outline: false });
+    put(B, pv, GEO.sphere(0.03, 6, 5), 0xffc060, { p: [x, h + 0.04, z], s: [0.7, 1.4, 0.7], at, layer: 'glow', bright: 3 });
+  }
+}
+
+function propBones(B, pv, at, seed) {
+  const rnd = mulberry32(seed), bone = 0xd8ccb0;
+  put(B, pv, GEO.sphere(0.13, 10, 8), bone, { p: [0, 0.12, 0], at });
+  for (let k = 0; k < 6; k++) {
+    const a = rnd() * Math.PI;
+    put(B, pv, GEO.cyl(0.025, 0.025, 0.4 + rnd() * 0.2, 5), bone, { p: [(rnd() - 0.5) * 0.7, 0.04, (rnd() - 0.5) * 0.6], r: [Math.PI / 2, a, 0], at, outline: false });
+  }
+}
+
+function propMushrooms(B, pv, at, color, seed) {
+  const rnd = mulberry32(seed);
+  for (let k = 0; k < 5; k++) {
+    const x = (rnd() - 0.5) * 0.8, z = (rnd() - 0.5) * 0.6, h = 0.12 + rnd() * 0.3;
+    put(B, pv, GEO.cyl(0.025, 0.035, h, 6), 0xd8e0d0, { p: [x, h / 2, z], at, outline: false });
+    put(B, pv, GEO.dome(0.06 + h * 0.3, 10, 5), color, { p: [x, h, z], s: [1, 0.6, 1], at, layer: 'glow', bright: 1.2 });
+  }
+}
+
+function propAnvil(B, pv, at) {
+  const iron = 0x3a3a40;
+  put(B, pv, GEO.box(0.5, 0.5, 0.4), 0x4a3022, { p: [0, 0.25, 0], at });
+  put(B, pv, GEO.box(0.3, 0.2, 0.25), iron, { p: [0, 0.6, 0], at, layer: 'metal' });
+  put(B, pv, GEO.box(0.8, 0.18, 0.3), iron, { p: [0.05, 0.78, 0], at, layer: 'metal' });
+  put(B, pv, GEO.cone(0.12, 0.35, 8), iron, { p: [0.6, 0.78, 0], r: [0, 0, -Math.PI / 2], at, layer: 'metal' });
+}
+
+function propDoor(B, pv, at, stone, trim) {
+  for (const s of [-1, 1]) {
+    put(B, pv, GEO.box(0.6, 3.2, 0.9), stone, { p: [1.25 * s, 1.6, 0], at, shade: (y) => 0.65 + y * 0.12 });
+    put(B, pv, GEO.box(0.75, 0.25, 1.0), stone, { p: [1.25 * s, 0.12, 0], at });
+    put(B, pv, GEO.box(0.72, 0.18, 0.98), stone, { p: [1.25 * s, 3.25, 0], at });
+  }
+  put(B, pv, GEO.torus(1.25, 0.3, 8, 24, Math.PI), stone, { p: [0, 3.25, 0], at });
+  put(B, pv, GEO.box(0.36, 0.5, 0.95), trim, { p: [0, 4.5, 0.02], at, layer: 'metal' });
+  put(B, pv, GEO.torus(1.0, 0.04, 6, 24, Math.PI), trim, { p: [0, 3.25, 0.32], at, layer: 'metal' });
+  put(B, pv, GEO.box(2.6, 0.18, 1.2), stone, { p: [0, 0.09, 0.55], at });
+}
+
+// The far wall: masonry runs between the doors, with engaged columns and a cornice.
+function propWallColumn(B, pv, at, stone) {
+  put(B, pv, fluted(0.3, 4.6, 12), stone, { p: [0, 2.3, 0], at, shade: (y) => 0.6 + y * 0.1 });
+  put(B, pv, GEO.box(0.8, 0.3, 0.8), stone, { p: [0, 4.75, 0], at });
+  put(B, pv, GEO.box(0.8, 0.3, 0.8), stone, { p: [0, 0.15, 0], at });
 }

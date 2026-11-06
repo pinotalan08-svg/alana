@@ -2,7 +2,16 @@
 
 Un roguelike d’action pour téléphone, inspiré de la boucle de jeu de *Hades* : on traverse les Abysses salle après salle, en combat en temps réel. Les Anciens offrent des bénédictions qui transforment chaque coup. Chaque mort ramène au Sanctuaire, où l’on se renforce pour la descente suivante.
 
-Le jeu tourne dans le navigateur, en 3D stylisée (three.js) : personnages en ombrage « cel » avec contours encrés, salles suspendues au-dessus d’un gouffre, braseros et lave. Aucun pixel art : les modèles, les textures et les icônes sont générés par le code. Il s’installe sur l’écran d’accueil et fonctionne ensuite hors connexion.
+Le jeu tourne dans le navigateur, en 3D stylisée (three.js) : personnages en ombrage « cel » avec contours encrés et reflets de contre-jour, salles suspendues au-dessus d’un gouffre, braseros et lave. Aucun pixel art : les modèles, les textures et les icônes sont générés par le code. Il s’installe sur l’écran d’accueil et fonctionne ensuite hors connexion.
+
+Côté rendu :
+
+- **Matériaux** : dalles, roche et magma peints à la volée avec carte de relief, de rugosité et d’émission (les flaques des Grottes brillent, les joints des Forges rougeoient), frises et médaillon en métal incrusté au sol.
+- **Lumière** : rendu HDR avec halo lumineux (*bloom*), étalonnage des couleurs, vignettage, ombres douces, lumières dynamiques pour les braseros, la lave et les explosions.
+- **Effets** : traînée d’épée, arcs de coups, particules et fumée, rayons de lumière, brume et débris flottants au-dessus du gouffre, portails animés aux portes, bannières et cape qui ondulent.
+- **Monstres** : apparition et mort par dissolution lumineuse, éclat blanc à l’impact, teinte glacée ou brûlante selon l’état.
+- Le héros reste visible en silhouette quand un pilier le cache.
+- Le réglage **Graphismes : économes** (menu pause) coupe le post-traitement et les ombres pour les téléphones modestes ; en mode élevé, la résolution s’adapte toute seule si les images ralentissent.
 
 ## Jouer sur ton téléphone
 
@@ -49,11 +58,13 @@ Le code est découpé en scripts classiques qui partagent la portée globale, ch
 | --- | --- |
 | `js/util.js` | Hasard, bus d’événements, stockage local protégé |
 | `js/data.js` | Zones, héros, armes, ennemis, Anciens et bénédictions, boutique, améliorations |
-| `js/gfx.js` | Textures peintes (sols, murs, lave, gouffre) et glyphes vectoriels de l’interface |
-| `js/models.js` | Modèles 3D procéduraux : héros, ennemis, boss, décor |
+| `js/gfx.js` | Outils de dessin, halos et glyphes vectoriels de l’interface |
+| `js/textures.js` | Matériaux procéduraux (couleur, relief, rugosité, émission), incrustations, textures d’effets |
+| `js/models.js` | Modèles 3D procéduraux (héros, ennemis, boss, décor) et leurs shaders : contre-jour, éclat, dissolution |
 | `js/room.js` | Plans des salles et collisions |
 | `js/game.js` | Simulation : combat, IA des ennemis et des boss, bénédictions, récompenses, progression |
-| `js/scene.js` | Rendu three.js : salles, animations, signalement des attaques, particules, caméra |
+| `js/post.js` | Post-traitement : rendu HDR, halo lumineux, étalonnage, vignettage, effets de dégâts |
+| `js/scene.js` | Rendu three.js : salles, animations, signalement des attaques, particules, traînées, caméra |
 | `js/ui.js` | HUD, choix de bénédictions, marchand, Sanctuaire, écrans |
 | `js/audio.js` | Effets sonores et musique générative (WebAudio), vibrations |
 | `js/input.js` | Joystick tactile, boutons, clavier |
