@@ -350,56 +350,74 @@ function clothMesh(w, h, colorTop, colorBottom, mat, trim) {
 
 // ---- Hero -----------------------------------------------------------------------------------------
 
-const HERO_COL = {
-  skin: 0xe2b48a, hair: 0x2a1214, hairTip: 0x7a1e22, tunic: 0x8e1a26, leather: 0x4a3028, bronze: 0xa8742e,
-  gold: 0xf2c14e, steel: 0xdfe4ee, dark: 0x1a1012,
+// Palette and silhouette for each playable hero; one builder makes all four.
+const HERO_STYLES = {
+  kael: {
+    skin: 0xe2b48a, hair: 0x2a1214, hairTip: 0x7a1e22, tunic: 0x8e1a26, leather: 0x4a3028, bronze: 0xa8742e,
+    gold: 0xf2c14e, steel: 0xdfe4ee, dark: 0x1a1012, cape: [0x7a1220, 0x4a0a14], rim: 0xffc070, edge: 0xff5a3a, width: 1, height: 1,
+  },
+  sira: {
+    skin: 0xc8906c, hair: 0x15101c, hairTip: 0x2a1a3a, tunic: 0x2c1c3e, leather: 0x1c1420, bronze: 0x4a4458,
+    gold: 0x5fd8c8, steel: 0xd8e8ee, dark: 0x0a0810, cape: [0x2a1a3a, 0x0e0a16], rim: 0x7fe8d8, edge: 0x5fe8d8, width: 0.9, height: 1.02,
+  },
+  brann: {
+    skin: 0xd09a74, hair: 0x9a5426, hairTip: 0xc0743a, tunic: 0x24365a, leather: 0x4a3426, bronze: 0x8c949e,
+    gold: 0xe0a848, steel: 0xe8ecf0, dark: 0x1a1012, cape: [0x2a4a8a, 0x101c3a], rim: 0xffd080, edge: 0xffb040, width: 1.16, height: 1.05,
+  },
+  maelis: {
+    skin: 0xf2cdb0, hair: 0xe8eeff, hairTip: 0x9cc8ff, tunic: 0xe6e0f2, leather: 0x5a4a86, bronze: 0x7aa8d8,
+    gold: 0x9fe6ff, steel: 0xeaf6ff, dark: 0x1a1430, cape: [0x3a6ab8, 0x16285a], rim: 0x9fd4ff, edge: 0x7fd8ff, width: 0.96, height: 1,
+  },
 };
+const HERO_COL = HERO_STYLES.kael;
 
-function buildHero(weapon) {
-  const c = newCharacter(0xffc070, 0.6, 0.02);
-  const { B, root } = c, H = HERO_COL;
-  const body = pivot(root, 0, 0, 0);
-  const legs = [], knees = [];
-  for (const s of [-1, 1]) {
-    const hip = pivot(body, 0.12 * s, 0.92, 0);
-    limb(B, hip, [0, 0, 0], [0, -0.42, 0.02], 0.1, 0.08, H.tunic);
-    put(B, hip, GEO.sphere(0.075, 10, 8), H.skin, { p: [0, -0.43, 0.02] });
-    const knee = pivot(hip, 0, -0.43, 0.02);
-    limb(B, knee, [0, 0, 0], [0, -0.4, -0.02], 0.07, 0.06, H.skin);
-    put(B, knee, GEO.cyl(0.082, 0.07, 0.28, 12), H.bronze, { p: [0, -0.2, 0.012], layer: 'metal' });
-    put(B, knee, GEO.box(0.13, 0.07, 0.27), H.leather, { p: [0, -0.44, 0.04] });
-    for (let k = 0; k < 3; k++) put(B, knee, GEO.torus(0.07, 0.01, 4, 12), H.leather, { p: [0, -0.32 + k * 0.05, 0], r: [Math.PI / 2, 0, 0], outline: false });
-    legs.push(hip);
-    knees.push(knee);
-  }
-  // pteruges: leather strips around the hips
-  for (let k = 0; k < 12; k++) {
-    const a = (k / 12) * Math.PI * 2;
-    put(B, body, GEO.box(0.085, 0.27, 0.03), k % 2 ? H.tunic : H.leather, {
-      p: [Math.sin(a) * 0.25, 0.83, Math.cos(a) * 0.23], r: [Math.cos(a) * 0.22, a, -Math.sin(a) * 0.22], outline: false,
-    });
-  }
-  put(B, body, GEO.torus(0.25, 0.035, 6, 20), H.leather, { p: [0, 0.98, 0], r: [Math.PI / 2, 0, 0] });
-  put(B, body, GEO.box(0.09, 0.08, 0.04), H.gold, { p: [0, 0.98, 0.25], layer: 'metal' });
-  const torso = pivot(body, 0, 1.0, 0);
-  put(B, torso, GEO.lathe([[0.0, 0], [0.23, 0], [0.27, 0.18], [0.33, 0.42], [0.3, 0.56], [0.14, 0.64], [0, 0.65]], 18), H.tunic, { s: [1, 1, 0.78] });
-  put(B, torso, GEO.sphere(0.29, 16, 12), H.bronze, { p: [0, 0.38, 0.07], s: [1, 0.85, 0.55], layer: 'metal' });
-  put(B, torso, GEO.box(0.05, 0.62, 0.03), H.leather, { p: [0.02, 0.33, 0.23], r: [0, 0, 0.62] });
-  for (const s of [-1, 1]) {
-    put(B, torso, GEO.dome(0.15, 14, 6), H.bronze, { p: [0.34 * s, 0.52, 0], r: [0, 0, -0.5 * s], s: [1, 0.7, 1.05], layer: 'metal' });
-    put(B, torso, GEO.torus(0.13, 0.018, 4, 16), H.gold, { p: [0.36 * s, 0.47, 0], r: [Math.PI / 2, 0.5 * s, 0], outline: false });
-  }
-  put(B, torso, GEO.cyl(0.07, 0.08, 0.12, 10), H.skin, { p: [0, 0.68, 0] });
-  const head = pivot(torso, 0, 0.84, 0.01);
+// A sphere with an opening in front: a hood.
+const hoodGeo = (r) => new THREE.SphereGeometry(r, 18, 12, Math.PI / 2 + 0.85, Math.PI * 2 - 1.7, 0, Math.PI * 0.78);
+
+function buildHead(B, head, id, H) {
   put(B, head, GEO.sphere(0.18, 18, 14), H.skin, { s: [0.92, 1.05, 1] });
   put(B, head, GEO.sphere(0.1, 12, 8), H.skin, { p: [0, -0.1, 0.05], s: [1, 0.8, 1] });
   put(B, head, GEO.cone(0.025, 0.07, 6), H.skin, { p: [0, -0.01, 0.18], r: [Math.PI / 2, 0, 0], outline: false });
   for (const s of [-1, 1]) {
-    put(B, head, GEO.sphere(0.022, 8, 6), H.dark, { p: [0.065 * s, 0.03, 0.155], outline: false });
+    if (id === 'sira') put(B, head, GEO.sphere(0.024, 8, 6), H.gold, { p: [0.065 * s, 0.03, 0.155], layer: 'glow', bright: 2.4 });
+    else put(B, head, GEO.sphere(0.022, 8, 6), id === 'maelis' ? 0x2a4a8a : H.dark, { p: [0.065 * s, 0.03, 0.155], outline: false });
     put(B, head, GEO.box(0.07, 0.016, 0.02), H.hair, { p: [0.065 * s, 0.075, 0.16], r: [0, 0, 0.2 * s], outline: false });
     put(B, head, GEO.sphere(0.035, 8, 6), H.skin, { p: [0.17 * s, -0.01, 0], s: [0.5, 1, 0.8] });
   }
+  if (id === 'sira') {
+    // deep hood, a mask over the mouth, a point falling down the back
+    put(B, head, hoodGeo(0.225), H.tunic, { p: [0, 0.02, -0.01], s: [1, 1.05, 1.08] });
+    put(B, head, GEO.cone(0.12, 0.34, 10), H.tunic, { p: [0, 0.02, -0.25], r: [-2.1, 0, 0] });
+    put(B, head, GEO.cyl(0.135, 0.15, 0.13, 16, true), H.gold, { p: [0, -0.1, 0.02] });
+    put(B, head, GEO.cyl(0.11, 0.19, 0.18, 16, true), H.tunic, { p: [0, -0.22, 0] });
+    return;
+  }
+  if (id === 'brann') {
+    // horned helm, a braided beard
+    put(B, head, GEO.dome(0.205, 16, 8), H.bronze, { p: [0, 0.03, -0.01], layer: 'metal' });
+    put(B, head, GEO.torus(0.2, 0.025, 6, 22), H.gold, { p: [0, 0.04, -0.01], r: [Math.PI / 2, 0, 0], layer: 'metal' });
+    put(B, head, GEO.box(0.035, 0.14, 0.03), H.bronze, { p: [0, 0.02, 0.2], layer: 'metal' });
+    for (const s of [-1, 1]) {
+      hornTube(B, head, [[0.17 * s, 0.1, 0], [0.3 * s, 0.18, -0.02], [0.36 * s, 0.34, -0.04], [0.32 * s, 0.46, -0.08]], 0.05, 0.008, 0xf0e4c8, { steps: 5 });
+    }
+    put(B, head, GEO.cone(0.15, 0.36, 12), H.hair, { p: [0, -0.24, 0.08], r: [Math.PI - 0.2, 0, 0] });
+    put(B, head, GEO.box(0.16, 0.04, 0.05), H.hair, { p: [0, -0.07, 0.17], r: [0, 0, 0] });
+    for (const s of [-1, 1]) put(B, head, GEO.cone(0.035, 0.22, 6), H.hairTip, { p: [0.07 * s, -0.36, 0.1], r: [Math.PI - 0.3, 0, 0.15 * s] });
+    return;
+  }
   put(B, head, GEO.sphere(0.195, 16, 10, 0), H.hair, { p: [0, 0.04, -0.03], s: [1.02, 0.95, 1.05] });
+  if (id === 'maelis') {
+    // long silver hair down the back, a glowing circlet with a gem
+    for (let k = 0; k < 9; k++) {
+      const a = -1.1 + (k / 8) * 2.2;
+      put(B, head, GEO.cone(0.075, 0.62, 6), k % 3 === 1 ? H.hairTip : H.hair, {
+        p: [Math.sin(a) * 0.13, -0.2, -0.08 + Math.cos(a) * -0.06], r: [Math.PI + 0.25, 0, -a * 0.25],
+      });
+    }
+    put(B, head, GEO.torus(0.192, 0.012, 6, 28), H.gold, { p: [0, 0.07, -0.01], r: [Math.PI / 2 - 0.15, 0, 0], layer: 'glow', bright: 1.6 });
+    put(B, head, GEO.ico(0.035, 0), 0xbff2ff, { p: [0, 0.1, 0.19], layer: 'glow', bright: 2.6 });
+    return;
+  }
   for (let k = 0; k < 9; k++) {
     const a = -1.2 + (k / 8) * 2.4;
     put(B, head, GEO.cone(0.06, 0.22, 6), k % 3 === 1 ? H.hairTip : H.hair, {
@@ -413,10 +431,67 @@ function buildHero(weapon) {
       p: [Math.sin(a) * 0.2, 0.1 + Math.sin(a * 2) * 0.01, Math.cos(a) * 0.19], r: [0.5, a, 0.4], s: [0.55, 0.32, 1.4], layer: 'glow', bright: 1.15,
     });
   }
+}
+
+function buildHero(weapon, id = 'kael') {
+  const H = HERO_STYLES[id] || HERO_STYLES.kael;
+  const c = newCharacter(H.rim, 0.6, 0.02);
+  const { B, root } = c;
+  const body = pivot(root, 0, 0, 0);
+  const legs = [], knees = [];
+  for (const s of [-1, 1]) {
+    const hip = pivot(body, 0.12 * s, 0.92, 0);
+    limb(B, hip, [0, 0, 0], [0, -0.42, 0.02], 0.1, 0.08, H.tunic);
+    put(B, hip, GEO.sphere(0.075, 10, 8), H.skin, { p: [0, -0.43, 0.02] });
+    const knee = pivot(hip, 0, -0.43, 0.02);
+    limb(B, knee, [0, 0, 0], [0, -0.4, -0.02], 0.07, 0.06, id === 'sira' ? H.leather : H.skin);
+    put(B, knee, GEO.cyl(0.082, 0.07, 0.28, 12), H.bronze, { p: [0, -0.2, 0.012], layer: 'metal' });
+    put(B, knee, GEO.box(0.13, 0.07, 0.27), H.leather, { p: [0, -0.44, 0.04] });
+    for (let k = 0; k < 3; k++) put(B, knee, GEO.torus(0.07, 0.01, 4, 12), H.leather, { p: [0, -0.32 + k * 0.05, 0], r: [Math.PI / 2, 0, 0], outline: false });
+    legs.push(hip);
+    knees.push(knee);
+  }
+  if (id === 'maelis') {
+    // a long robe, split at the front, trimmed with light
+    put(B, body, GEO.lathe([[0.4, 0.06], [0.42, 0.08], [0.36, 0.3], [0.28, 0.7], [0.24, 0.98], [0, 1.0]], 22), H.tunic, {});
+    put(B, body, GEO.torus(0.41, 0.02, 6, 30), H.gold, { p: [0, 0.08, 0], r: [Math.PI / 2, 0, 0], layer: 'glow', bright: 1.3, outline: false });
+    put(B, body, GEO.box(0.06, 0.9, 0.02), H.leather, { p: [0, 0.52, 0.3], r: [0.12, 0, 0] });
+  } else {
+    // pteruges: leather strips around the hips
+    for (let k = 0; k < 12; k++) {
+      const a = (k / 12) * Math.PI * 2;
+      put(B, body, GEO.box(0.085, 0.27, 0.03), k % 2 ? H.tunic : H.leather, {
+        p: [Math.sin(a) * 0.25, 0.83, Math.cos(a) * 0.23], r: [Math.cos(a) * 0.22, a, -Math.sin(a) * 0.22], outline: false,
+      });
+    }
+  }
+  put(B, body, GEO.torus(0.25, 0.035, 6, 20), H.leather, { p: [0, 0.98, 0], r: [Math.PI / 2, 0, 0] });
+  put(B, body, GEO.box(0.09, 0.08, 0.04), H.gold, { p: [0, 0.98, 0.25], layer: 'metal' });
+  const torso = pivot(body, 0, 1.0, 0);
+  put(B, torso, GEO.lathe([[0.0, 0], [0.23, 0], [0.27, 0.18], [0.33, 0.42], [0.3, 0.56], [0.14, 0.64], [0, 0.65]], 18), H.tunic, { s: [1, 1, 0.78] });
+  if (id !== 'sira') put(B, torso, GEO.sphere(0.29, 16, 12), H.bronze, { p: [0, 0.38, 0.07], s: [1, 0.85, 0.55], layer: 'metal' });
+  put(B, torso, GEO.box(0.05, 0.62, 0.03), H.leather, { p: [0.02, 0.33, 0.23], r: [0, 0, 0.62] });
+  const pad = id === 'brann' ? 1.35 : 1;
+  for (const s of [-1, 1]) {
+    if (id === 'sira') {
+      put(B, torso, GEO.dome(0.12, 12, 6), H.leather, { p: [0.33 * s, 0.52, 0], r: [0, 0, -0.5 * s], s: [1, 0.6, 1] });
+      continue;
+    }
+    put(B, torso, GEO.dome(0.15, 14, 6), H.bronze, { p: [0.34 * s, 0.52, 0], r: [0, 0, -0.5 * s], s: [pad, 0.7 * pad, 1.05 * pad], layer: 'metal' });
+    put(B, torso, GEO.torus(0.13 * pad, 0.018, 4, 16), H.gold, { p: [0.36 * s, 0.47, 0], r: [Math.PI / 2, 0.5 * s, 0], outline: false });
+  }
+  if (id === 'brann') put(B, torso, GEO.torus(0.27, 0.11, 8, 22), H.cape[0], { p: [0, 0.6, -0.03], r: [Math.PI / 2 + 0.15, 0, 0] });
+  if (id === 'sira') {
+    put(B, torso, GEO.torus(0.17, 0.06, 8, 18), H.gold, { p: [0, 0.62, 0.02], r: [Math.PI / 2 + 0.2, 0, 0] });
+    for (const s of [-1, 1]) put(B, torso, GEO.box(0.03, 0.66, 0.025), H.leather, { p: [0.08 * s, 0.33, 0.235], r: [0, 0, 0.55 * s] });
+  }
+  put(B, torso, GEO.cyl(0.07, 0.08, 0.12, 10), H.skin, { p: [0, 0.68, 0] });
+  const head = pivot(torso, 0, 0.84, 0.01);
+  buildHead(B, head, id, H);
   const arms = [], elbows = [];
   for (const s of [-1, 1]) {
     const sh = pivot(torso, 0.36 * s, 0.48, 0);
-    limb(B, sh, [0, 0, 0], [0.02 * s, -0.3, 0], 0.07, 0.06, H.skin);
+    limb(B, sh, [0, 0, 0], [0.02 * s, -0.3, 0], 0.07, 0.06, id === 'maelis' || id === 'sira' ? H.tunic : H.skin);
     const el = pivot(sh, 0.02 * s, -0.3, 0);
     limb(B, el, [0, 0, 0], [0, -0.27, 0.03], 0.058, 0.05, H.skin);
     put(B, el, GEO.cyl(0.066, 0.06, 0.15, 10), H.bronze, { p: [0, -0.15, 0.02], layer: 'metal' });
@@ -425,7 +500,8 @@ function buildHero(weapon) {
     elbows.push(el);
   }
   const capePivot = pivot(torso, 0, 0.56, -0.2);
-  const cape = clothMesh(0.6, 0.98, 0x7a1220, 0x4a0a14, charMaterial(c.u, { side: THREE.DoubleSide }), H.gold);
+  const capeSize = id === 'sira' ? [0.5, 0.72] : id === 'brann' ? [0.72, 1.0] : id === 'maelis' ? [0.62, 1.1] : [0.6, 0.98];
+  const cape = clothMesh(capeSize[0], capeSize[1], H.cape[0], H.cape[1], charMaterial(c.u, { side: THREE.DoubleSide }), H.gold);
   capePivot.add(cape);
 
   const weaponPivot = pivot(body, 0.3, 1.05, 0.12);
@@ -433,23 +509,24 @@ function buildHero(weapon) {
   weaponPivot.add(tip, base);
   if (weapon === 'bow') {
     const curve = [[0, -0.55, 0.02], [0, -0.42, 0.1], [0, -0.2, 0.04], [0, 0, 0.0], [0, 0.2, 0.04], [0, 0.42, 0.1], [0, 0.55, 0.02]];
-    put(B, weaponPivot, GEO.tube(curve.map(([x, y, z]) => [x, y, z + 0.32]), 0.03, 24, 6), 0x6b3a1f, {});
+    put(B, weaponPivot, GEO.tube(curve.map(([x, y, z]) => [x, y, z + 0.32]), 0.03, 24, 6), id === 'maelis' ? 0xd8e4f4 : 0x6b3a1f, {});
     put(B, weaponPivot, GEO.cyl(0.006, 0.006, 1.06, 4), 0xf6e6c0, { p: [0, 0, 0.35], outline: false });
     for (const y of [-0.56, 0.56]) put(B, weaponPivot, GEO.sphere(0.035, 8, 6), H.gold, { p: [0, y, 0.34], layer: 'glow', bright: 1.3 });
-    put(B, weaponPivot, GEO.sphere(0.05, 10, 8), 0xffc777, { p: [0, 0, 0.33], layer: 'glow', bright: 2.2 });
+    put(B, weaponPivot, GEO.sphere(0.05, 10, 8), H.edge, { p: [0, 0, 0.33], layer: 'glow', bright: 2.2 });
     tip.position.set(0, 0.55, 0.34);
     base.position.set(0, -0.55, 0.34);
   } else {
-    const blade = GEO.extrude(bladeShape(1.0, 0.1, 0.2), 0.016, 0.008);
+    const len = id === 'brann' ? 1.15 : id === 'sira' ? 0.85 : 1.0;
+    const blade = GEO.extrude(bladeShape(len, id === 'brann' ? 0.13 : 0.1, 0.2), 0.016, 0.008);
     put(B, weaponPivot, blade, H.steel, { p: [0, 0, 0.18], r: [Math.PI / 2, 0, 0], layer: 'metal' });
-    put(B, weaponPivot, GEO.box(0.012, 0.012, 0.7), 0xff5a3a, { p: [0, 0.018, 0.55], layer: 'glow', bright: 2.4 });
+    put(B, weaponPivot, GEO.box(0.012, 0.012, len * 0.7), H.edge, { p: [0, 0.018, 0.18 + len * 0.37], layer: 'glow', bright: 2.4 });
     put(B, weaponPivot, GEO.torus(0.11, 0.022, 6, 16, Math.PI), H.gold, { p: [0, 0, 0.17], r: [Math.PI / 2, 0, Math.PI], layer: 'metal' });
     put(B, weaponPivot, GEO.cyl(0.026, 0.026, 0.2, 8), H.leather, { p: [0, 0, 0.05], r: [Math.PI / 2, 0, 0] });
     put(B, weaponPivot, GEO.sphere(0.04, 10, 8), H.gold, { p: [0, 0, -0.06], layer: 'metal' });
-    tip.position.set(0, 0, 1.18);
+    tip.position.set(0, 0, 0.18 + len);
     base.position.set(0, 0, 0.3);
   }
-  root.scale.setScalar(1.12);
+  root.scale.set(1.12 * H.width, 1.12 * H.height, 1.12 * H.width);
   return finishCharacter(c, { rig: { body, torso, head, legs, knees, arms, elbows, cape, capePivot, weapon: weaponPivot, tip, base } });
 }
 
@@ -460,7 +537,8 @@ function eyes(B, pv, color, y, z, spread, size = 0.04, bright = 3) {
 }
 
 function buildWretch(def) {
-  const c = newCharacter(0xff6a4a, 0.5), { B, root } = c, skin = def.color, rag = 0x2e2c26, bone = 0xc8bfa8;
+  const look = def.look || {};
+  const c = newCharacter(look.eye ? look.eye : 0xff6a4a, 0.5), { B, root } = c, skin = def.color, rag = look.rag ?? 0x2e2c26, bone = look.bone ?? 0xc8bfa8;
   const body = pivot(root, 0, 0, 0);
   for (const s of [-1, 1]) limb(B, body, [0.12 * s, 0.6, 0], [0.14 * s, 0, 0.08], 0.06, 0.05, skin);
   put(B, body, tattered(0.22, 0.46, 1.0, 7), rag, { p: [0, 0.62, -0.02], r: [0.28, 0, 0] });
@@ -470,7 +548,7 @@ function buildWretch(def) {
   put(B, head, GEO.box(0.16, 0.06, 0.12), bone, { p: [0, -0.13, 0.06] });
   for (let k = 0; k < 5; k++) put(B, head, GEO.cone(0.015, 0.05, 4), 0xf0e8d0, { p: [-0.05 + k * 0.025, -0.1, 0.12], r: [Math.PI, 0, 0], outline: false });
   put(B, head, GEO.cone(0.27, 0.42, 12, true), rag, { p: [0, 0.06, -0.06], r: [-0.35, 0, 0] });
-  eyes(B, head, 0xff3b2f, 0.02, 0.15, 0.065, 0.034, 3.5);
+  eyes(B, head, look.eye ?? 0xff3b2f, 0.02, 0.15, 0.065, 0.034, 3.5);
   const arms = [];
   for (const s of [-1, 1]) {
     const sh = pivot(body, 0.32 * s, 0.95, 0.12);
@@ -816,9 +894,172 @@ function buildWyrm(def) {
   return finishCharacter(c, { rig: { body, neck, head, jaw, wings, tails, mouthGlow } });
 }
 
+// ---- Glacier and Void --------------------------------------------------------------------------------
+
+function buildGolem(def) {
+  const c = newCharacter(0x9fe6ff, 0.7, 0.026), { B, root } = c, ice = def.color, rock = 0x4e5c6c, glow = 0x7fe8ff;
+  const body = pivot(root, 0, 0, 0);
+  const legs = [];
+  for (const s of [-1, 1]) {
+    const hip = pivot(body, 0.34 * s, 0.82, 0);
+    limb(B, hip, [0, 0, 0], [0.02 * s, -0.66, 0.04], 0.24, 0.2, rock);
+    put(B, hip, displace(GEO.ico(0.27, 0), 0.3, 3 + s), ice, { p: [0.02 * s, -0.7, 0.1], s: [1.1, 0.65, 1.35] });
+    legs.push(hip);
+  }
+  const torso = pivot(body, 0, 0.85, 0);
+  put(B, torso, displace(GEO.ico(0.62, 1), 0.22, 7), rock, { p: [0, 0.48, 0], s: [1.3, 1.0, 0.95] });
+  put(B, torso, displace(GEO.ico(0.5, 1), 0.3, 8), ice, { p: [0, 0.62, 0.12], s: [1.25, 0.9, 0.8] });
+  put(B, torso, GEO.ico(0.15, 0), glow, { p: [0, 0.52, 0.56], layer: 'glow', bright: 2.4 });
+  // a ridge of crystals growing out of the back and shoulders
+  for (let k = 0; k < 7; k++) {
+    const a = -1.2 + (k / 6) * 2.4;
+    put(B, torso, GEO.cone(0.11, 0.55 + (k % 3) * 0.15, 6), 0xd8f4ff, { p: [Math.sin(a) * 0.55, 0.95 + Math.cos(a) * 0.1, -0.35], r: [-0.6, 0, -a * 0.5] });
+  }
+  const head = pivot(torso, 0, 1.12, 0.22);
+  put(B, head, displace(GEO.ico(0.27, 0), 0.25, 9), rock, { s: [1.2, 0.9, 1] });
+  put(B, head, GEO.box(0.36, 0.06, 0.1), 0x1a2430, { p: [0, 0.02, 0.2], outline: false });
+  eyes(B, head, glow, 0.03, 0.24, 0.1, 0.045, 3.5);
+  const arms = [];
+  for (const s of [-1, 1]) {
+    const sh = pivot(torso, 0.82 * s, 0.78, 0);
+    put(B, sh, displace(GEO.ico(0.3, 0), 0.3, 11 + s), ice, { s: [1.2, 0.9, 1.1] });
+    for (let k = 0; k < 3; k++) put(B, sh, GEO.cone(0.07, 0.42 - k * 0.08, 5), 0xd8f4ff, { p: [0.1 * s, 0.22, -0.12 + k * 0.12], r: [0, 0, -0.5 * s] });
+    limb(B, sh, [0, -0.1, 0], [0.1 * s, -0.62, 0.1], 0.2, 0.17, rock);
+    put(B, sh, displace(GEO.ico(0.32, 0), 0.35, 13 + s), ice, { p: [0.12 * s, -0.86, 0.14], s: [1, 1.1, 1] });
+    arms.push(sh);
+  }
+  return finishCharacter(c, { rig: { body, torso, head, legs, arms } });
+}
+
+function buildEye(def) {
+  const c = newCharacter(0xd08aff, 0.9, 0.02), { B, root } = c, flesh = def.color, dark = 0x1a0a2a;
+  const body = pivot(root, 0, 1.45, 0);
+  put(B, body, GEO.sphere(0.48, 18, 14), flesh, { s: [1, 0.95, 1] });
+  put(B, body, GEO.torus(0.36, 0.07, 8, 24), dark, { p: [0, 0, 0.3], s: [1, 1, 0.8] });
+  put(B, body, GEO.sphere(0.34, 16, 12), 0xf4ecf4, { p: [0, 0, 0.26], s: [1, 1, 0.55], outline: false });
+  for (let k = 0; k < 8; k++) {
+    const a = (k / 8) * Math.PI * 2;
+    put(B, body, GEO.cone(0.07, 0.36, 6), dark, { p: [Math.cos(a) * 0.4, Math.sin(a) * 0.4, -0.2], r: [-Math.PI / 2 + Math.sin(a) * 0.9, 0, -Math.cos(a) * 0.9] });
+  }
+  const iris = pivot(body, 0, 0, 0.42);
+  put(B, iris, GEO.sphere(0.15, 14, 10), 0xc070ff, { s: [1, 1, 0.5], layer: 'glow', bright: 2.4 });
+  put(B, iris, GEO.sphere(0.07, 10, 8), 0x05020a, { p: [0, 0, 0.05], s: [0.6, 1, 0.5], outline: false });
+  const tentacles = [];
+  for (let k = 0; k < 5; k++) {
+    const a = (k / 5) * Math.PI * 2;
+    const t = pivot(body, Math.cos(a) * 0.22, -0.3, Math.sin(a) * 0.22 - 0.05);
+    hornTube(B, t, [[0, 0, 0], [Math.cos(a) * 0.12, -0.35, Math.sin(a) * 0.12], [Math.cos(a) * 0.05, -0.75, Math.sin(a) * 0.2], [Math.cos(a) * 0.15, -1.05, Math.sin(a) * 0.1]], 0.07, 0.01, flesh, { steps: 5 });
+    tentacles.push(t);
+  }
+  const glow = glowSprite(0xb060ff, 1.4, 0.4);
+  glow.position.set(0, 0, 0.5);
+  body.add(glow);
+  return finishCharacter(c, { rig: { body, iris, tentacles, glow } });
+}
+
+function buildQueen(def) {
+  const c = newCharacter(0xbfe8ff, 0.9, 0.024), { B, root } = c, robe = def.color, deep = 0x3a64a8, skin = 0xdce8f4, ice = 0x9fe6ff;
+  const body = pivot(root, 0, 0.35, 0);
+  put(B, body, GEO.lathe([[0.95, 0], [0.88, 0.12], [0.62, 0.62], [0.4, 1.2], [0.3, 1.5], [0, 1.56]], 26), robe, { shade: (y) => 0.55 + 0.45 * clamp((y - 0.35) / 1.5, 0, 1) });
+  put(B, body, GEO.torus(0.92, 0.035, 6, 36), ice, { p: [0, 0.06, 0], r: [Math.PI / 2, 0, 0], layer: 'glow', bright: 1.8, outline: false });
+  for (let k = 0; k < 12; k++) {
+    const a = (k / 12) * Math.PI * 2;
+    put(B, body, GEO.cone(0.08, 0.45 + (k % 3) * 0.15, 5), 0xd8f4ff, { p: [Math.cos(a) * 0.85, 0.2, Math.sin(a) * 0.85], r: [Math.sin(a) * 0.9, 0, -Math.cos(a) * 0.9] });
+  }
+  const torso = pivot(body, 0, 1.5, 0);
+  put(B, torso, GEO.lathe([[0.3, 0], [0.34, 0.2], [0.3, 0.42], [0.14, 0.52], [0, 0.54]], 18), deep, { s: [1, 1, 0.8] });
+  put(B, torso, GEO.ico(0.08, 0), ice, { p: [0, 0.3, 0.26], layer: 'glow', bright: 2.6 });
+  for (const s of [-1, 1]) {
+    for (let k = 0; k < 3; k++) put(B, torso, GEO.cone(0.06, 0.5 - k * 0.1, 5), 0xd8f4ff, { p: [0.3 * s, 0.48, -0.08 + k * 0.08], r: [0, 0, -(0.5 + k * 0.3) * s] });
+  }
+  const head = pivot(torso, 0, 0.66, 0.02);
+  put(B, head, GEO.sphere(0.16, 16, 12), skin, { s: [0.9, 1.08, 1] });
+  put(B, head, hoodGeo(0.18), 0xf0f6ff, { p: [0, 0.03, -0.01], s: [1.02, 1, 1.05] });
+  for (let k = 0; k < 7; k++) {
+    const a = -0.9 + (k / 6) * 1.8;
+    put(B, head, GEO.cone(0.06, 0.7, 6), k % 2 ? 0xdfeaff : 0xb8d8ff, { p: [Math.sin(a) * 0.12, -0.25, -0.1], r: [Math.PI + 0.2, 0, -a * 0.2] });
+  }
+  // the crown: a ring of ice spikes, the tallest in the middle
+  for (let k = 0; k < 7; k++) {
+    const a = -1.3 + (k / 6) * 2.6, h = 0.2 + (1 - Math.abs(a) / 1.3) * 0.3;
+    put(B, head, GEO.cone(0.035, h, 5), ice, { p: [Math.sin(a) * 0.15, 0.17 + h / 2, Math.cos(a) * 0.1], r: [-0.15, 0, -a * 0.35], layer: k === 3 ? 'glow' : 'base', bright: 1.8 });
+  }
+  eyes(B, head, 0x9ff4ff, 0.02, 0.14, 0.055, 0.025, 4);
+  const arms = [];
+  for (const s of [-1, 1]) {
+    const sh = pivot(torso, 0.32 * s, 0.4, 0);
+    limb(B, sh, [0, 0, 0], [0.06 * s, -0.42, 0.06], 0.06, 0.05, skin);
+    put(B, sh, GEO.cone(0.16, 0.42, 12, true), deep, { p: [0.05 * s, -0.36, 0.05], r: [Math.PI, 0, 0] });
+    arms.push(sh);
+  }
+  const staff = pivot(arms[1], 0.06, -0.5, 0.1);
+  limb(B, staff, [0, -0.9, 0], [0, 1.0, 0], 0.025, 0.025, 0xc8d8ec);
+  put(B, staff, GEO.torus(0.09, 0.015, 5, 14), ice, { p: [0, 1.02, 0], layer: 'glow', bright: 1.6 });
+  const orb = pivot(staff, 0, 1.18, 0);
+  put(B, orb, GEO.ico(0.13, 0), 0xcff8ff, { s: [0.8, 1.5, 0.8], layer: 'glow', bright: 2.4 });
+  const halo = glowSprite(0x9fe6ff, 1.6, 0.7);
+  orb.add(halo);
+  const capePivot = pivot(torso, 0, 0.46, -0.2);
+  const cape = clothMesh(1.1, 1.9, deep, 0x16285a, charMaterial(c.u, { side: THREE.DoubleSide }), ice);
+  capePivot.add(cape);
+  root.scale.setScalar(1.3);
+  return finishCharacter(c, { rig: { body, torso, head, arms, staff, orb, cape } });
+}
+
+function buildVoidLord(def) {
+  const c = newCharacter(0xc080ff, 1.0, 0.035), { B, root } = c;
+  const armor = 0x2e2042, dark = 0x100818, trim = 0xa070e0, bone = 0xd8cce8, glow = 0xc070ff;
+  const body = pivot(root, 0, 0.5, 0);
+  put(B, body, tattered(0.95, 1.6, 2.0, 21, 20), dark, { p: [0, 1.0, 0] });
+  put(B, body, tattered(0.8, 1.3, 1.6, 22, 16), 0x2a1440, { p: [0, 1.25, 0.05] });
+  const torso = pivot(body, 0, 1.9, 0);
+  put(B, torso, GEO.lathe([[0.75, 0], [1.0, 0.4], [1.12, 0.9], [0.92, 1.3], [0.42, 1.48], [0, 1.52]], 22), armor, { s: [1, 1, 0.78] });
+  put(B, torso, GEO.torus(0.8, 0.05, 6, 30), trim, { p: [0, 0.12, 0], r: [Math.PI / 2, 0, 0], s: [1, 0.78, 1], layer: 'metal' });
+  for (let k = 0; k < 4; k++) {
+    put(B, torso, GEO.torus(0.5 - k * 0.05, 0.035, 5, 16, Math.PI), bone, { p: [0, 0.45 + k * 0.2, 0.62], r: [0, 0, Math.PI], s: [1, 0.6, 1] });
+  }
+  const core = pivot(torso, 0, 0.62, 0.78);
+  put(B, core, GEO.ico(0.24, 1), glow, { layer: 'glow', bright: 2.6 });
+  const coreGlow = glowSprite(0xb060ff, 2.6, 0.7);
+  core.add(coreGlow);
+  for (const s of [-1, 1]) {
+    put(B, torso, GEO.dome(0.48, 16, 8), armor, { p: [1.05 * s, 1.22, 0], r: [0, 0, -0.45 * s], s: [1, 0.75, 1] });
+    for (let k = 0; k < 3; k++) put(B, torso, GEO.cone(0.09, 0.7 - k * 0.15, 6), bone, { p: [(1.1 + k * 0.08) * s, 1.5 - k * 0.08, -0.25 + k * 0.25], r: [-0.2, 0, -(0.35 + k * 0.2) * s] });
+  }
+  const head = pivot(torso, 0, 1.62, 0.2);
+  put(B, head, hoodGeo(0.6), dark, { p: [0, 0.08, -0.08], s: [1.05, 1.1, 1.1] });
+  put(B, head, GEO.sphere(0.4, 16, 12), bone, { s: [0.88, 1.05, 1] });
+  put(B, head, GEO.box(0.42, 0.16, 0.3), bone, { p: [0, -0.32, 0.12] });
+  for (let k = 0; k < 6; k++) put(B, head, GEO.cone(0.025, 0.1, 4), 0xf4ecff, { p: [-0.15 + k * 0.06, -0.24, 0.28], r: [Math.PI, 0, 0], outline: false });
+  put(B, head, GEO.sphere(0.11, 12, 10), glow, { p: [0, 0.06, 0.34], layer: 'glow', bright: 3.2 });
+  for (const s of [-1, 1]) {
+    put(B, head, GEO.sphere(0.045, 8, 6), glow, { p: [0.2 * s, 0.14, 0.3], layer: 'glow', bright: 2.6 });
+    hornTube(B, head, [[0.25 * s, 0.25, 0], [0.5 * s, 0.6, -0.1], [0.55 * s, 1.05, -0.3], [0.4 * s, 1.4, -0.55]], 0.12, 0.01, dark, { steps: 6 });
+    hornTube(B, head, [[0.3 * s, 0.05, -0.05], [0.65 * s, 0.15, -0.25], [0.85 * s, 0.4, -0.5]], 0.07, 0.008, bone, { steps: 4 });
+  }
+  const arms = [];
+  for (const s of [-1, 1]) {
+    const sh = pivot(torso, 1.15 * s, 1.1, 0);
+    limb(B, sh, [0, 0, 0], [0.2 * s, -0.95, 0.2], 0.26, 0.21, armor);
+    put(B, sh, GEO.torus(0.22, 0.04, 5, 16), trim, { p: [0.1 * s, -0.5, 0.1], r: [Math.PI / 2, 0, 0], layer: 'metal' });
+    limb(B, sh, [0.2 * s, -0.95, 0.2], [0.25 * s, -1.75, 0.55], 0.2, 0.17, dark);
+    put(B, sh, GEO.sphere(0.24, 12, 10), armor, { p: [0.25 * s, -1.8, 0.58] });
+    for (let k = -1.5; k <= 1.5; k++) put(B, sh, GEO.cone(0.05, 0.42, 5), bone, { p: [0.25 * s + k * 0.09, -2.0, 0.7], r: [Math.PI - 0.5, 0, k * 0.15] });
+    arms.push(sh);
+  }
+  const orbs = pivot(body, 0, 2.6, 0);
+  for (let k = 0; k < 5; k++) {
+    const a = (k / 5) * Math.PI * 2, o = pivot(orbs, Math.cos(a) * 2.5, Math.sin(k * 2.1) * 0.5, Math.sin(a) * 2.5);
+    put(B, o, GEO.ico(0.2, 0), k % 2 ? glow : 0x7a4ab8, { s: [0.7, 1.4, 0.7], layer: 'glow', bright: 2 });
+    o.add(glowSprite(0xa060ff, 1.1, 0.5));
+  }
+  root.scale.setScalar(1.12);
+  return finishCharacter(c, { rig: { body, torso, head, arms, orbs, core } });
+}
+
 function buildEnemyModel(type) {
   const def = ENEMIES[type];
-  switch (type) {
+  switch (def.model || type) {
     case 'wretch': return buildWretch(def);
     case 'bat': return buildBat(def);
     case 'archer': return buildSkeleton(def);
@@ -830,6 +1071,10 @@ function buildEnemyModel(type) {
     case 'sentinel': return buildSkeleton(def, 2.1, true);
     case 'troll': return buildTroll(def);
     case 'wyrm': return buildWyrm(def);
+    case 'golem': return buildGolem(def);
+    case 'eye': return buildEye(def);
+    case 'queen': return buildQueen(def);
+    case 'voidlord': return buildVoidLord(def);
     default: return buildWretch(def);
   }
 }
@@ -837,7 +1082,7 @@ function buildEnemyModel(type) {
 // ---- Props (added to a static builder, merged per room) -----------------------------------------------
 // Each prop builder takes the room builder, a pivot and a placement matrix.
 
-const STONE = { crypt: 0x8a8296, cave: 0x5d6f6a, forge: 0x5a4a44 };
+const STONE = { crypt: 0x8a8296, cave: 0x5d6f6a, forge: 0x5a4a44, ice: 0xa8c4da, void: 0x3e3450 };
 
 const placeAt = (x, z, rot = 0, s = 1) => new THREE.Matrix4().compose(
   new THREE.Vector3(x, 0, z), new THREE.Quaternion().setFromAxisAngle(UP, rot), new THREE.Vector3(s, s, s),

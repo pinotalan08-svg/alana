@@ -2,7 +2,7 @@
 
 const META_KEY = 'abysses.meta.v2';
 const RUN_KEY = 'abysses.run.v2';
-const RUN_VERSION = 2;
+const RUN_VERSION = 3;
 
 // Meta: permanent progression (saved). Run: the current descent (saved at each chamber).
 // Ch: the live chamber simulation (never saved; a resumed run restarts its chamber).
@@ -14,9 +14,13 @@ let Ch = null;
 
 function loadMeta() {
   const m = store.get(META_KEY, {}) || {};
-  return {
-    shards: 0, upgrades: {}, bow: false, weapon: 'sword', runs: 0, wins: 0, bestRoom: 0, kills: 0, ...m,
+  const meta = {
+    shards: 0, upgrades: {}, bow: false, weapon: 'sword', runs: 0, wins: 0, bestRoom: 0, kills: 0,
+    hero: 'kael', heroes: {}, skill: 'thunder', skills: {}, difficulty: 'normal', cleared: {}, ...m,
   };
+  meta.heroes = { kael: true, ...meta.heroes };
+  meta.skills = { thunder: true, ...meta.skills };
+  return meta;
 }
 const saveMeta = () => store.set(META_KEY, Meta);
 const upgradeLevel = (id) => Meta.upgrades[id] || 0;
@@ -47,6 +51,51 @@ function buyUpgrade(id) {
   Meta.upgrades[id] = lvl + 1;
   saveMeta();
   return true;
+}
+
+// ---- Heroes, skills and difficulty chosen in the Sanctuary -------------------------------------------
+
+const diffDef = (id) => DIFFICULTIES.find((d) => d.id === id) || DIFFICULTIES[1];
+const difficultyOpen = (d) => !d.needsWin || Meta.wins > 0;
+
+function unlockHero(id) {
+  const h = HEROES[id];
+  if (!h || Meta.heroes[id] || Meta.shards < h.cost) return false;
+  Meta.shards -= h.cost;
+  Meta.heroes[id] = true;
+  Meta.skills[h.skill] = true;
+  Meta.hero = id;
+  Meta.skill = h.skill;
+  saveMeta();
+  return true;
+}
+
+function selectHero(id) {
+  if (!Meta.heroes[id]) return;
+  Meta.hero = id;
+  saveMeta();
+}
+
+function unlockSkill(id) {
+  const sk = SKILLS[id];
+  if (!sk || Meta.skills[id] || sk.cost === undefined || Meta.shards < sk.cost) return false;
+  Meta.shards -= sk.cost;
+  Meta.skills[id] = true;
+  Meta.skill = id;
+  saveMeta();
+  return true;
+}
+
+function selectSkill(id) {
+  if (!Meta.skills[id]) return;
+  Meta.skill = id;
+  saveMeta();
+}
+
+function selectDifficulty(id) {
+  if (!difficultyOpen(diffDef(id))) return;
+  Meta.difficulty = id;
+  saveMeta();
 }
 
 function unlockBow() {
@@ -117,9 +166,12 @@ function levelBoon(b) {
 // ---- Run flow --------------------------------------------------------------------------------------
 
 function startRun() {
-  const maxHp = HERO.hp + 8 * upgradeLevel('vitality');
+  const hero = Meta.heroes[Meta.hero] && HEROES[Meta.hero] ? Meta.hero : 'kael';
+  const skill = Meta.skills[Meta.skill] && SKILLS[Meta.skill] ? Meta.skill : HEROES[hero].skill;
+  const diff = difficultyOpen(diffDef(Meta.difficulty)) ? diffDef(Meta.difficulty).id : 'normal';
+  const maxHp = HEROES[hero].hp + 8 * upgradeLevel('vitality');
   Run = {
-    v: RUN_VERSION, weapon: Meta.weapon === 'bow' && Meta.bow ? 'bow' : 'sword', room: 0,
+    v: RUN_VERSION, weapon: Meta.weapon === 'bow' && Meta.bow ? 'bow' : 'sword', room: 0, hero, skill, diff, skillCd: 0,
     hp: maxHp, maxHp, gold: 25 * upgradeLevel('fortune'), boons: [], defiance: upgradeLevel('reprieve'), forge: 0,
     kills: 0, time: 0, shards: 0, reward: { type: 'boon', anc: pick(Object.keys(ANCIENTS)) },
   };
@@ -134,10 +186,11 @@ function enterChamber() {
   const doorRewards = rollDoorRewards(Run.room + 1);
   const room = genRoom(biome, kind, doorRewards.length);
   room.doors.forEach((d, i) => (d.reward = doorRewards[i]));
+  const D = diffDef(Run.diff);
   Ch = {
-    room, kind, biome, step, t: 0, nextId: 1,
-    enemies: [], projectiles: [], hazards: [], pickups: [], bolts: [],
-    waves: kind === 'combat' ? planWaves(biome, combatIndex()) : [], waveIdx: 0, waveDelay: 1.1,
+    room, kind, biome, step, t: 0, nextId: 1, D, H: HEROES[Run.hero] || HEROES.kael,
+    enemies: [], projectiles: [], hazards: [], pickups: [], bolts: [], timers: [],
+    waves: kind === 'combat' ? planWaves(biome, combatIndex(), D) : [], waveIdx: 0, waveDelay: 1.1,
     cleared: kind === 'rest', rewardTaken: kind === 'rest', doorsOpen: kind === 'rest',
     hitstop: 0, lavaTick: 0, fountainUsed: false, nearMerchant: false, boss: null,
     shop: kind === 'rest' ? shuffle(SHOP_ITEMS.slice()).slice(0, 3).map((it) => ({ ...it, sold: false })) : null,
@@ -175,20 +228,22 @@ function rollDoorRewards(next) {
   return out.length ? out : [{ type: 'gold' }];
 }
 
-function planWaves(biome, idx) {
+function planWaves(biome, idx, D) {
   const pool = BIOMES[biome].enemies;
   const n = idx === 0 ? 1 : idx < 3 ? 2 : chance(0.45) ? 3 : 2;
   const waves = [];
+  const eliteChance = Math.min(0.5, (0.06 + 0.02 * idx) * D.elite);
   for (let w = 0; w < n; w++) {
-    const count = 3 + Math.floor(idx * 0.35) + rand(2) + (w > 0 ? 1 : 0);
+    const count = Math.min(8, 3 + Math.floor(idx * 0.35) + rand(2) + (w > 0 ? 1 : 0));
     const wave = [];
-    for (let i = 0; i < count; i++) wave.push({ type: pickWeighted(pool), elite: biome > 0 && chance(0.06 + 0.02 * idx) });
+    for (let i = 0; i < count; i++) wave.push({ type: pickWeighted(pool), elite: (biome > 0 || D.elite > 1.5) && chance(eliteChance) });
     waves.push(wave);
   }
   return waves;
 }
 
 function nextChamber(reward) {
+  Run.skillCd = Ch.player.skillCd;
   Run.room += 1;
   Run.reward = reward;
   Bus.emit('leave');
@@ -198,7 +253,10 @@ function nextChamber(reward) {
 function endRun(won) {
   if (!Ch || Ch.over) return;
   Meta.runs += 1;
-  if (won) Meta.wins += 1;
+  if (won) {
+    Meta.wins += 1;
+    Meta.cleared[Run.diff] = true;
+  }
   Meta.bestRoom = Math.max(Meta.bestRoom, Run.room + 1);
   Meta.kills += Run.kills;
   saveMeta();
@@ -212,13 +270,16 @@ function endRun(won) {
 function refreshStats() {
   const P = Ch && Ch.player;
   if (!P) return;
-  P.dmgMult = (1 + 0.06 * upgradeLevel('might')) * (1 + 0.15 * Run.forge);
-  P.crit = 0.04 * upgradeLevel('insight');
-  P.dashMax = 1 + upgradeLevel('swift') + boonVal('wind_dash');
-  const castMax = 1 + upgradeLevel('echo') + boonVal('wind_cast');
+  const H = Ch.H;
+  P.dmgMult = H.dmg * (1 + 0.06 * upgradeLevel('might')) * (1 + 0.15 * Run.forge);
+  P.crit = H.crit + 0.04 * upgradeLevel('insight');
+  P.dashMax = 1 + H.dashes + upgradeLevel('swift') + boonVal('wind_dash');
+  const castMax = 1 + H.cast + upgradeLevel('echo') + boonVal('wind_cast');
   if (castMax > P.castMax) P.castAmmo += castMax - P.castMax;
   P.castMax = castMax;
-  P.speed = HERO.speed * (1 + boonVal('wind_passive') / 100);
+  P.armor = H.armor;
+  P.skillMax = SKILLS[Run.skill].cd * (1 - 0.1 * upgradeLevel('mastery'));
+  P.speed = HERO.speed * H.speed * (1 + boonVal('wind_passive') / 100);
   P.dodge = boonVal('wind_dodge') / 100;
   P.atkSpeed = 1 + boonVal('wind_attack') / 100;
   P.specSpeed = 1 + boonVal('wind_special') / 100;
@@ -231,6 +292,7 @@ function makePlayer() {
     state: 'idle', st: 0, combo: 0, comboT: 0, queued: false, hits: new Set(), atk: null,
     dashes: 1, dashMax: 1, dashT: 0, dashDir: null, iframes: 0, dashStrikeT: 0, critT: 0, trailT: 0,
     castAmmo: 0, castMax: 0, charge: 0, charging: false, shotCd: 0,
+    skillCd: Run.skillCd || 0, skillMax: 1, shieldT: 0, veilT: 0, armor: 0,
   };
   Ch.player = P;
   refreshStats();
@@ -240,7 +302,9 @@ function makePlayer() {
 }
 
 // Aim along the stick, snapping to the best enemy inside a forgiving cone.
-function aimDir(range, cone = 1.15) {
+const aimDir = (range, cone) => aimTarget(range, cone).dir;
+
+function aimTarget(range, cone = 1.15) {
   const P = Ch.player, mv = Input.move;
   let dx = P.face.x, dz = P.face.z;
   if (Math.hypot(mv.x, mv.z) > 0.25) {
@@ -259,9 +323,9 @@ function aimDir(range, cone = 1.15) {
     const cos = (ex * dx + ez * dz) / d;
     if (cos < Math.cos(cone)) continue;
     const score = d * (2.2 - cos);
-    if (score < bestScore) { bestScore = score; best = { x: ex / d, z: ez / d }; }
+    if (score < bestScore) { bestScore = score; best = { x: ex / d, z: ez / d, e }; }
   }
-  return best || { x: dx, z: dz };
+  return best ? { dir: { x: best.x, z: best.z }, target: best.e } : { dir: { x: dx, z: dz }, target: null };
 }
 
 const busy = (P) => P.state === 'attack' || P.state === 'special' || P.state === 'cast' || P.state === 'dash' || P.state === 'volley';
@@ -277,6 +341,9 @@ function updatePlayer(dt) {
   P.critT = Math.max(0, P.critT - dt);
   P.comboT = Math.max(0, P.comboT - dt);
   P.shotCd = Math.max(0, P.shotCd - dt);
+  P.skillCd = Math.max(0, P.skillCd - dt);
+  P.veilT = Math.max(0, P.veilT - dt);
+  if (P.shieldT > 0 && (P.shieldT -= dt) <= 0) aegisBurst(P);
   if (P.dashes < P.dashMax) {
     P.dashT += dt;
     if (P.dashT >= HERO.dashRegen) { P.dashes = P.dashMax; P.dashT = 0; }
@@ -287,6 +354,7 @@ function updatePlayer(dt) {
   if (P.state !== 'dash' && P.dashes > 0 && Input.take('dash')) startDash(mv, mag);
   else if (!busy(P)) {
     if (Input.take('special')) startSpecial();
+    else if (Input.take('skill')) useSkill();
     else if (Input.take('cast')) startCast();
     else if (Input.take('attack') || (Input.held.attack && Run.weapon === 'sword')) startAttack();
   }
@@ -554,7 +622,7 @@ function startCast() {
   P.st = 0;
   Ch.projectiles.push({
     owner: 'player', kind: 'crystal', src: 'cast', x: P.x + dir.x * 0.6, z: P.z + dir.z * 0.6, y: 1.1,
-    vx: dir.x * CAST.speed, vz: dir.z * CAST.speed, r: 0.32, dmg: CAST.dmg * P.dmgMult, pierce: false,
+    vx: dir.x * CAST.speed, vz: dir.z * CAST.speed, r: 0.32, dmg: CAST.dmg * P.dmgMult * (Ch.H.castDmg || 1), pierce: false,
     life: CAST.range / CAST.speed, hit: new Set(),
   });
   Bus.emit('cast', P);
@@ -584,8 +652,9 @@ function crystalImpact(p, target) {
       target.mark = 6;
     }
   }
-  if (target && target.alive) target.lodged = (target.lodged || 0) + 1;
-  else dropCrystal(p.x, p.z);
+  // Maëlis' crystals never stay lodged: they fall and fly back to her
+  if (target && target.alive && !Ch.H.recall) target.lodged = (target.lodged || 0) + 1;
+  else dropCrystal(target ? target.x : p.x, target ? target.z : p.z);
 }
 
 function dropCrystal(x, z) {
@@ -599,15 +668,22 @@ function hurtPlayer(dmg, from, ignoreDash = false) {
   const P = Ch.player;
   if (Ch.over || P.state === 'dead') return false;
   if (ignoreDash ? P.iframes > HERO.iframes - 0.15 : P.iframes > 0) return false;
+  if (P.shieldT > 0) {
+    if (Ch.t - (P.blockT ?? -1) > 0.2) {
+      P.blockT = Ch.t;
+      Bus.emit('blocked', P);
+    }
+    return false;
+  }
   if (P.dodge && !ignoreDash && Math.random() < P.dodge) {
     P.iframes = 0.3;
     Bus.emit('dodged', P);
     return false;
   }
-  dmg = Math.max(1, Math.round(dmg));
+  dmg = Math.max(1, Math.round(dmg * Ch.D.dmg * (1 - P.armor)));
   Run.hp -= dmg;
   P.iframes = HERO.iframes;
-  if (from) {
+  if (from && !Ch.H.steady) {
     const dx = P.x - from.x, dz = P.z - from.z, d = Math.hypot(dx, dz) || 1;
     P.kx = (dx / d) * 6;
     P.kz = (dz / d) * 6;
@@ -661,7 +737,7 @@ function dealDamage(e, base, o = {}) {
     if (P.critT > 0 && direct) c = 1;
     if (Math.random() < c) {
       crit = true;
-      dmg *= 3 * (1 + boonVal('shadow_passive') / 100);
+      dmg *= (Ch.H.critMult || 3) * (1 + boonVal('shadow_passive') / 100);
     }
   }
   if (o.src === 'special') {
@@ -782,10 +858,12 @@ function bossDefeated(e) {
   Ch.hazards = [];
   Ch.projectiles = Ch.projectiles.filter((p) => p.owner === 'player');
   Ch.cleared = true;
-  Meta.shards += e.def.shards;
-  Run.shards += e.def.shards;
+  const shards = Math.round(e.def.shards * Ch.D.shards);
+  Meta.shards += shards;
+  Run.shards += shards;
   saveMeta();
   Bus.emit('bossDown', e);
+  roomConquered();
   if (Run.room >= TOTAL_ROOMS - 1) {
     setTimeout(() => endRun(true), 2600);
   } else {
@@ -804,7 +882,117 @@ function breakUrns(x, z, r) {
 }
 
 function addHazard(h) {
-  Ch.hazards.push({ t: 0, delay: 0, tick: 0, ...h });
+  const hz = { t: 0, delay: 0, tick: 0, ...h };
+  Ch.hazards.push(hz);
+  return hz;
+}
+
+// Kael's trait: a little blood back each time a chamber falls silent.
+function roomConquered() {
+  const n = Ch.H.regen;
+  if (!n || Run.hp <= 0) return;
+  const before = Run.hp;
+  Run.hp = Math.min(Run.maxHp, Run.hp + n);
+  if (Run.hp > before) Bus.emit('toast', `Sang des Abysses : +${Run.hp - before} PV`, '#ff8a8a');
+}
+
+// ---- Skills ------------------------------------------------------------------------------------------
+
+function useSkill() {
+  const P = Ch.player, id = Run.skill, S = SKILLS[id];
+  if (P.skillCd > 0) {
+    Bus.emit('skillWait', P.skillCd);
+    return;
+  }
+  if (SKILL_FX[id](P, S) === false) return;
+  P.skillCd = P.skillMax;
+  P.state = 'cast';
+  P.st = 0;
+  P.charging = false;
+  Bus.emit('skill', id, P);
+}
+
+const SKILL_FX = {
+  thunder(P, S) {
+    const targets = Ch.enemies
+      .filter((e) => e.alive && e.spawnT <= 0 && Math.hypot(e.x - P.x, e.z - P.z) < 11)
+      .sort((a, b) => Math.hypot(a.x - P.x, a.z - P.z) - Math.hypot(b.x - P.x, b.z - P.z))
+      .slice(0, 6);
+    if (!targets.length) {
+      Bus.emit('toast', 'Aucun ennemi à portée');
+      return false;
+    }
+    targets.forEach((e, i) => Ch.timers.push({
+      t: i * 0.09,
+      fn: () => {
+        if (!e.alive) return;
+        Bus.emit('strike', e.x, e.z);
+        dealDamage(e, S.dmg * P.dmgMult * stormMult(), { src: 'skill', stagger: true });
+      },
+    }));
+    return true;
+  },
+  veil(P, S) {
+    P.iframes = Math.max(P.iframes, S.time);
+    P.critT = Math.max(P.critT, S.time);
+    P.veilT = S.time;
+    return true;
+  },
+  aegis(P, S) {
+    P.shieldT = S.time;
+    return true;
+  },
+  winter(P, S) {
+    Bus.emit('nova', P.x, P.z, S.radius);
+    for (const e of enemiesNear(P.x, P.z, S.radius)) {
+      dealDamage(e, S.dmg * P.dmgMult, { src: 'skill', noCrit: true });
+      if (!e.alive) continue;
+      e.frozen = Math.max(e.frozen, e.def.boss ? 0.9 : 2.5);
+      e.chill = 0;
+      e.tele = null;
+      Bus.emit('freeze', e);
+    }
+    return true;
+  },
+  meteor(P, S) {
+    const aim = aimTarget(11, 1.3), room = Ch.room;
+    const x = aim.target ? aim.target.x : P.x + aim.dir.x * 5, z = aim.target ? aim.target.z : P.z + aim.dir.z * 5;
+    P.face = aim.dir;
+    addHazard({
+      kind: 'aoe', owner: 'player', look: 'meteor', r: S.radius, delay: 0.75, dmg: S.dmg * P.dmgMult,
+      x: clamp(x, -room.W / 2 + 1, room.W / 2 - 1), z: clamp(z, -room.D / 2 + 1, room.D / 2 - 1),
+    });
+    return true;
+  },
+  renewal(P) {
+    const heal = Math.round(Run.maxHp * 0.18);
+    Run.hp = Math.min(Run.maxHp, Run.hp + heal);
+    P.dashes = P.dashMax;
+    let back = 0;
+    for (const k of Ch.pickups) {
+      if (k.kind === 'crystal' && !k.taken) {
+        k.taken = true;
+        back++;
+      }
+    }
+    for (const e of Ch.enemies) {
+      back += e.lodged || 0;
+      e.lodged = 0;
+    }
+    P.castAmmo = Math.min(P.castMax, P.castAmmo + back);
+    Bus.emit('renewal', P, heal);
+    return true;
+  },
+};
+
+function aegisBurst(P) {
+  const S = SKILLS.aegis, r = 3.4;
+  P.shieldT = 0;
+  for (const e of enemiesNear(P.x, P.z, r)) {
+    const dx = e.x - P.x, dz = e.z - P.z, d = Math.hypot(dx, dz) || 1;
+    dealDamage(e, S.dmg * P.dmgMult, { src: 'skill', dx: dx / d, dz: dz / d, knock: 12, stagger: true, noCrit: true });
+  }
+  Bus.emit('aegisBurst', P.x, P.z, r);
 }
 
 // ---- Enemies --------------------------------------------------------------------------------------
@@ -812,7 +1000,7 @@ function addHazard(h) {
 function spawnEnemy(type, x, z, opts = {}) {
   const def = ENEMIES[type], idx = combatIndex();
   const elite = !!opts.elite;
-  const hp = Math.round(def.hp * (def.boss ? 1 : 1 + 0.08 * idx) * (elite ? 1.8 : 1));
+  const hp = Math.round(def.hp * (def.boss ? 1 : 1 + 0.08 * idx) * (elite ? 1.8 : 1) * (Ch.D ? Ch.D.hp : 1));
   const P = Ch.player;
   const e = {
     id: Ch.nextId++, type, def, x, z, y: 0, kx: 0, kz: 0, r: def.radius * (elite ? 1.15 : 1), hp, maxHp: hp, elite,
@@ -884,7 +1072,7 @@ function updateEnemies(dt) {
     }
     const k = 1 - Math.min(0.7, e.chill * ((boonVal('frost_attack') || 14) / 100));
     const ox = e.x, oz = e.z;
-    AI[e.def.ai](e, dt * k, k, P);
+    AI[e.def.ai](e, dt * k * Ch.D.speed, k, P);
     if (!e.alive) continue;
     if (!e.def.flying) collide(Ch.room, e, e.r);
     e.speedNow = Math.hypot(e.x - ox, e.z - oz) / Math.max(dt, 1e-4);
@@ -1383,6 +1571,309 @@ const AI = {
         if (e.st >= 0.8 * pace) { e.state = 'chase'; e.cd = (0.6 + Math.random() * 0.8) * pace; }
     }
   },
+
+  // ---- Glacier and Void monsters ----
+
+  golem(e, dt, k, P) {
+    const t = toP(e, P), d = e.def;
+    if (e.state === 'windup') {
+      e.st += dt;
+      e.tele = { shape: 'circle', x: e.x, z: e.z, r: d.slamRadius, p: e.st / d.windup };
+      if (e.st >= d.windup) {
+        e.tele = null;
+        if (inCircle(e.x, e.z, d.slamRadius, P)) hurtPlayer(d.dmg * e.dmgMult, e);
+        Bus.emit('slam', e.x, e.z, d.slamRadius, 'ice');
+        e.state = 'recover';
+        e.st = 0;
+      }
+    } else if (e.state === 'spikes') {
+      // a line of ice spikes bursts from the ground toward the hero
+      e.st += dt;
+      if (e.st < 0.5) e.lock = turnTo(e.lock, t.ang, dt * 3);
+      e.ang = e.lock;
+      e.tele = { shape: 'line', x: e.x, z: e.z, ang: e.lock, len: 9.5, w: 1.4, p: e.st / 0.9 };
+      if (e.st >= 0.9) {
+        e.tele = null;
+        for (let i = 0; i < 6; i++) {
+          const dd = 1.5 + i * 1.4;
+          addHazard({ kind: 'aoe', owner: 'enemy', look: 'ice', x: e.x + Math.cos(e.lock) * dd, z: e.z + Math.sin(e.lock) * dd, r: 0.85, delay: 0.04 + i * 0.07, dmg: d.dmg * 0.8 * e.dmgMult });
+        }
+        Bus.emit('enemyAttack', e);
+        e.state = 'recover';
+        e.st = 0;
+      }
+    } else if (e.state === 'recover') {
+      e.st += dt;
+      if (e.st >= 0.9) { e.state = 'chase'; e.cd = d.cooldown * (0.8 + Math.random() * 0.4); }
+    } else {
+      e.state = 'chase';
+      walk(e, t.dx, t.dz, d.speed * k, dt);
+      e.cd -= dt;
+      if (e.cd <= 0) {
+        if (t.d < 2.9) { e.state = 'windup'; e.st = 0; }
+        else if (t.d < 9 && clearLine(Ch.room, e.x, e.z, P.x, P.z)) { e.state = 'spikes'; e.st = 0; e.lock = t.ang; }
+      }
+    }
+  },
+
+  eye(e, dt, k, P) {
+    const t = toP(e, P), d = e.def;
+    if (e.state === 'aim') {
+      e.st += dt;
+      if (e.data.beam) e.ang = e.data.beam.ang;
+      if (e.st >= 1.55) { e.state = 'recover'; e.st = 0; e.data.beam = null; }
+    } else if (e.state === 'volley') {
+      e.st += dt;
+      e.ang = t.ang;
+      e.tele = { shape: 'circle', x: e.x, z: e.z, r: 1, p: e.st / 0.6 };
+      if (e.st >= 0.6) {
+        e.tele = null;
+        for (let i = -1; i <= 1; i++) enemyShot(e, t.ang + i * 0.32, 7, 'void', d.dmg * 0.8, { life: 3 });
+        Bus.emit('enemyShoot', e);
+        e.state = 'recover';
+        e.st = 0;
+      }
+    } else if (e.state === 'recover') {
+      e.st += dt;
+      if (e.st >= 0.5) { e.state = 'float'; e.cd = d.cooldown * (0.8 + Math.random() * 0.4); e.data.strafe = -(e.data.strafe || 1); }
+    } else {
+      e.state = 'float';
+      e.data.strafe = e.data.strafe || (chance(0.5) ? 1 : -1);
+      const want = t.d > 9 ? 1 : t.d < 5.5 ? -1 : 0;
+      walk(e, t.dx * want - t.dz * e.data.strafe * 0.5, t.dz * want + t.dx * e.data.strafe * 0.5, d.speed * k, dt);
+      collide(Ch.room, e, e.r);
+      e.ang = turnTo(e.ang, t.ang, dt * 4);
+      e.cd -= dt;
+      if (e.cd <= 0 && t.d < 12) {
+        e.st = 0;
+        if (chance(0.35)) e.state = 'volley';
+        else {
+          e.state = 'aim';
+          e.data.beam = addHazard({
+            kind: 'beam', owner: 'enemy', look: 'void', from: e, state: 'aim', ang: e.ang, offset: 0.5,
+            len: 13, w: 0.75, delay: 1.05, dur: 0.45, track: 2.1, dmg: d.dmg * e.dmgMult, x: e.x, z: e.z,
+          });
+        }
+      }
+    }
+  },
+
+  // ---- Isolde, the Frost Queen: shard fans, falling icicles, frost rings, blinks ----
+
+  queen(e, dt, k, P) {
+    const t = toP(e, P), d = e.def, hpr = e.hp / e.maxHp, room = Ch.room;
+    if (!e.data.p2 && hpr < 0.5) {
+      e.data.p2 = true;
+      for (let i = 0; i < 3; i++) {
+        const p = freePoint(room, P, 4, 1);
+        if (p) spawnEnemy(i ? 'frostwretch' : 'golem', p.x, p.z);
+      }
+      Bus.emit('roar', e);
+    }
+    const p2 = e.data.p2, pace = p2 ? 0.75 : 1;
+    switch (e.state) {
+      case 'chase': {
+        // glide at a distance, never cornered
+        const want = t.d > 8 ? 1 : t.d < 5 ? -1 : 0;
+        e.data.side = e.data.side || 1;
+        walk(e, t.dx * want - t.dz * 0.5 * e.data.side, t.dz * want + t.dx * 0.5 * e.data.side, d.speed * k, dt);
+        e.ang = turnTo(e.ang, t.ang, dt * 4);
+        e.cd -= dt;
+        if (e.cd > 0) break;
+        const opts = [['shards', 4], ['blizzard', 3], ['blink', 1.6]];
+        if (t.d < 6.5) opts.push(['nova', 3.5]);
+        if (p2) opts.push(['lances', 3]);
+        e.state = pickWeighted(opts);
+        e.st = 0;
+        e.data.volleys = 0;
+        break;
+      }
+      case 'shards':
+        e.st += dt;
+        e.ang = t.ang;
+        e.tele = { shape: 'circle', x: e.x, z: e.z, r: 1.4, p: Math.min(1, e.st / (0.55 * pace)) };
+        if (e.st >= 0.55 * pace) {
+          e.tele = null;
+          const n = 7, spread = 1.15;
+          for (let i = 0; i < n; i++) enemyShot(e, t.ang + (i / (n - 1) - 0.5) * spread, 10.5, 'shard', 11, { life: 2.4 });
+          Bus.emit('enemyShoot', e);
+          e.data.volleys += 1;
+          e.st = 0.55 * pace - 0.38;
+          if (e.data.volleys >= (p2 ? 3 : 2)) { e.state = 'recover'; e.st = 0; }
+        }
+        break;
+      case 'blizzard':
+        e.st += dt;
+        e.ang = t.ang;
+        e.tele = { shape: 'circle', x: e.x, z: e.z, r: 1.6, p: Math.min(1, e.st / 0.5) };
+        if (e.st >= 0.5) {
+          e.tele = null;
+          const n = p2 ? 8 : 6;
+          for (let i = 0; i < n; i++) {
+            const ox = i ? (Math.random() - 0.5) * 7 : 0, oz = i ? (Math.random() - 0.5) * 7 : 0;
+            addHazard({ kind: 'aoe', owner: 'enemy', look: 'ice', x: P.x + ox, z: P.z + oz, r: 1.5, delay: 1.1 + i * 0.05, dmg: 13 });
+          }
+          Bus.emit('enemyShoot', e);
+          e.state = 'recover';
+          e.st = 0;
+        }
+        break;
+      case 'nova':
+        e.st += dt;
+        e.tele = { shape: 'circle', x: e.x, z: e.z, r: 2.4, p: e.st / (0.75 * pace) };
+        if (e.st >= 0.75 * pace) {
+          e.tele = null;
+          if (inCircle(e.x, e.z, 2.4, P)) hurtPlayer(d.dmg, e);
+          addHazard({ kind: 'ring', owner: 'enemy', look: 'ice', x: e.x, z: e.z, speed: 6.5, max: 15, w: 0.8, dmg: 11 });
+          if (p2) addHazard({ kind: 'ring', owner: 'enemy', look: 'ice', x: e.x, z: e.z, speed: 6.5, max: 15, w: 0.8, dmg: 11, t: -0.55 });
+          Bus.emit('slam', e.x, e.z, 2.4, 'ice');
+          e.state = 'recover';
+          e.st = 0;
+        }
+        break;
+      case 'lances':
+        // three tracking beams of frozen light
+        e.st += dt;
+        e.ang = t.ang;
+        if (!e.data.lanced) {
+          e.data.lanced = true;
+          for (let i = -1; i <= 1; i++) {
+            addHazard({
+              kind: 'beam', owner: 'enemy', look: 'ice', from: e, state: 'lances', ang: t.ang + i * 0.55, offset: 0.8,
+              len: 15, w: 0.9, delay: 1.1, dur: 0.5, track: i === 0 ? 1.4 : 0, dmg: 13, x: e.x, z: e.z,
+            });
+          }
+        }
+        if (e.st >= 1.7) { e.data.lanced = false; e.state = 'recover'; e.st = 0; }
+        break;
+      case 'blink':
+        e.st += dt;
+        if (e.st >= 0.35 && !e.data.moved) {
+          const p = freePoint(room, P, 5.5, 1.4);
+          if (p && Math.hypot(p.x - P.x, p.z - P.z) < 10) { e.x = p.x; e.z = p.z; }
+          e.data.moved = true;
+          e.data.side = -(e.data.side || 1);
+          Bus.emit('blink', e);
+        }
+        if (e.st >= 0.7) { e.data.moved = false; e.state = 'shards'; e.st = 0; e.data.volleys = 0; }
+        break;
+      default:
+        e.state = 'recover';
+        e.st += dt;
+        if (e.st >= 0.75 * pace) { e.state = 'chase'; e.cd = (0.5 + Math.random() * 0.7) * pace; }
+    }
+  },
+
+  // ---- Azhral, the Devourer: the final guardian, in three phases ----
+
+  voidlord(e, dt, k, P) {
+    const t = toP(e, P), d = e.def, hpr = e.hp / e.maxHp, room = Ch.room;
+    const summon = (types) => {
+      for (const type of types) {
+        const p = freePoint(room, P, 4, 1);
+        if (p) spawnEnemy(type, p.x, p.z);
+      }
+      Bus.emit('roar', e);
+    };
+    if (!e.data.p2 && hpr < 0.66) { e.data.p2 = true; summon(['eye', 'shade', 'shade']); }
+    if (!e.data.p3 && hpr < 0.33) {
+      e.data.p3 = true;
+      summon(['eye', 'shade']);
+      e.state = 'beams';
+      e.st = 0;
+      e.data.cast = false;
+    }
+    const phase = e.data.p3 ? 3 : e.data.p2 ? 2 : 1, pace = [1, 1, 0.85, 0.7][phase];
+    e.data.phase = phase;
+    switch (e.state) {
+      case 'chase': {
+        const want = t.d > 7 ? 1 : t.d < 4 ? -0.6 : 0;
+        walk(e, t.dx * want, t.dz * want, d.speed * k, dt);
+        e.ang = turnTo(e.ang, t.ang, dt * 2.5);
+        e.cd -= dt;
+        if (e.cd > 0) break;
+        const opts = [['beams', 3.5], ['orbs', 3], ['grasp', 3]];
+        if (t.d < 4.8) opts.push(['slam', 4]);
+        if (phase >= 2) opts.push(['rings', 2.5]);
+        e.state = pickWeighted(opts);
+        e.st = 0;
+        e.data.cast = false;
+        break;
+      }
+      case 'beams': {
+        // a star of beams from his body; later phases make it sweep round
+        e.st += dt;
+        const n = phase === 3 ? 6 : phase === 2 ? 4 : 3, delay = 1.15 * pace, dur = phase === 1 ? 0.6 : phase === 2 ? 1.8 : 2.2;
+        if (!e.data.cast) {
+          e.data.cast = true;
+          const base = t.ang + (phase === 1 ? 0 : Math.PI / n), spin = phase === 1 ? 0 : (chance(0.5) ? 1 : -1) * (phase === 3 ? 0.85 : 0.6);
+          for (let i = 0; i < n; i++) {
+            addHazard({
+              kind: 'beam', owner: 'enemy', look: 'void', from: e, state: 'beams', ang: base + (i / n) * Math.PI * 2, offset: 1.2,
+              len: 16, w: 1.0, delay, dur, spin, dmg: 12, x: e.x, z: e.z,
+            });
+          }
+          Bus.emit('enemyAttack', e);
+        }
+        if (e.st >= delay + dur + 0.1) { e.state = 'recover'; e.st = 0; }
+        break;
+      }
+      case 'orbs':
+        e.st += dt;
+        e.ang = t.ang;
+        e.tele = { shape: 'circle', x: e.x, z: e.z, r: 2, p: Math.min(1, e.st / (0.7 * pace)) };
+        if (e.st >= 0.7 * pace) {
+          e.tele = null;
+          const n = phase === 1 ? 5 : 7;
+          for (let i = 0; i < n; i++) enemyShot(e, t.ang + (i / (n - 1) - 0.5) * 2.2, 5.2, 'void', 12, { homing: 1.5, life: 5.5 });
+          Bus.emit('enemyShoot', e);
+          e.state = 'recover';
+          e.st = 0;
+        }
+        break;
+      case 'grasp':
+        e.st += dt;
+        e.ang = t.ang;
+        if (e.st >= 0.45) {
+          const n = phase === 1 ? 4 : 6;
+          for (let i = 0; i < n; i++) {
+            const ox = i ? (Math.random() - 0.5) * 6.5 : 0, oz = i ? (Math.random() - 0.5) * 6.5 : 0;
+            addHazard({ kind: 'aoe', owner: 'enemy', look: 'void', x: P.x + ox, z: P.z + oz, r: 1.6, delay: 1.05, dmg: 15, voidPool: phase === 3 });
+          }
+          Bus.emit('enemyShoot', e);
+          e.state = 'recover';
+          e.st = 0;
+        }
+        break;
+      case 'slam':
+        e.st += dt;
+        e.tele = { shape: 'circle', x: e.x, z: e.z, r: 4.4, p: e.st / (0.8 * pace) };
+        if (e.st >= 0.8 * pace) {
+          e.tele = null;
+          if (inCircle(e.x, e.z, 4.4, P)) hurtPlayer(d.dmg + 3, e);
+          addHazard({ kind: 'ring', owner: 'enemy', look: 'void', x: e.x, z: e.z, speed: 7, max: 13, w: 0.8, dmg: 12 });
+          Bus.emit('slam', e.x, e.z, 4.4, 'void');
+          e.state = 'recover';
+          e.st = 0;
+        }
+        break;
+      case 'rings':
+        e.st += dt;
+        e.tele = { shape: 'circle', x: e.x, z: e.z, r: 2.2, p: Math.min(1, e.st / 0.6) };
+        if (e.st >= 0.6) {
+          e.tele = null;
+          for (let i = 0; i < 3; i++) addHazard({ kind: 'ring', owner: 'enemy', look: 'void', x: e.x, z: e.z, speed: 5.5, max: 15, w: 0.8, dmg: 12, t: -i * 0.7 });
+          Bus.emit('slam', e.x, e.z, 2.2, 'void');
+          e.state = 'recover';
+          e.st = 0;
+        }
+        break;
+      default:
+        e.state = 'recover';
+        e.st += dt;
+        if (e.st >= 0.8 * pace) { e.state = 'chase'; e.cd = (0.5 + Math.random() * 0.6) * pace; }
+    }
+  },
 };
 
 // ---- Projectiles, hazards, pickups -------------------------------------------------------------------
@@ -1439,13 +1930,25 @@ function updateHazards(dt) {
       if (!h.fired && h.t >= h.delay) {
         h.fired = true;
         if (h.owner === 'enemy' && inCircle(h.x, h.z, h.r, P)) hurtPlayer(h.dmg, h);
+        if (h.owner === 'player') {
+          for (const e of enemiesNear(h.x, h.z, h.r)) {
+            const dx = e.x - h.x, dz = e.z - h.z, d = Math.hypot(dx, dz) || 1;
+            dealDamage(e, h.dmg, { src: 'skill', dx: dx / d, dz: dz / d, knock: 9, stagger: true });
+            if (e.alive) addBurn(e, 3);
+          }
+          breakUrns(h.x, h.z, h.r);
+          Ch.hitstop = Math.max(Ch.hitstop, 0.06);
+        }
         Bus.emit('blast', h);
         if (h.lava) addHazard({ kind: 'pool', owner: 'enemy', x: h.x, z: h.z, r: h.r * 0.85, life: 4, dps: 10, look: 'lava' });
+        if (h.voidPool) addHazard({ kind: 'pool', owner: 'enemy', x: h.x, z: h.z, r: h.r * 0.8, life: 4.5, dps: 10, look: 'void' });
       }
       if (h.t >= h.delay + 0.25) h.dead = true;
+    } else if (h.kind === 'beam') {
+      updateBeam(h, P, dt);
     } else if (h.kind === 'ring') {
       const radius = h.speed * h.t, dp = Math.hypot(P.x - h.x, P.z - h.z);
-      if (!h.hitP && Math.abs(dp - radius) < h.w / 2 + P.r * 0.5) h.hitP = hurtPlayer(h.dmg, h);
+      if (!h.hitP && radius > 0 && Math.abs(dp - radius) < h.w / 2 + P.r * 0.5) h.hitP = hurtPlayer(h.dmg, h);
       if (radius > h.max) h.dead = true;
     } else if (h.kind === 'pool') {
       if ((h.tick -= dt) <= 0) {
@@ -1464,6 +1967,35 @@ function updateHazards(dt) {
   Ch.bolts = Ch.bolts.filter((b) => b.t < 0.3);
 }
 
+// A beam is telegraphed as a line for `delay` seconds (optionally tracking the hero), then burns
+// along its length for `dur` seconds, optionally sweeping round. It dies with the monster casting it.
+function updateBeam(h, P, dt) {
+  const src = h.from;
+  if (src) {
+    if (!src.alive || (h.t < h.delay && (src.frozen > 0 || src.stun > 0 || (h.state && src.state !== h.state)))) {
+      h.dead = true;
+      return;
+    }
+    h.x = src.x + Math.cos(h.ang) * (h.offset || 0);
+    h.z = src.z + Math.sin(h.ang) * (h.offset || 0);
+  }
+  if (h.t < h.delay) {
+    if (h.track) h.ang = turnTo(h.ang, Math.atan2(P.z - h.z, P.x - h.x), h.track * dt);
+    return;
+  }
+  if (!h.fired) {
+    h.fired = true;
+    Bus.emit('beam', h);
+  }
+  if (h.spin) h.ang += h.spin * dt;
+  const dx = P.x - h.x, dz = P.z - h.z, c = Math.cos(h.ang), s = Math.sin(h.ang);
+  const along = dx * c + dz * s, across = Math.abs(-dx * s + dz * c);
+  if ((h.tick -= dt) <= 0 && along > 0 && along < h.len && across < h.w / 2 + P.r * 0.6 && P.state !== 'dead') {
+    h.tick = hurtPlayer(h.dmg, { x: h.x, z: h.z }) ? 0.6 : 0.1;
+  }
+  if (h.t >= h.delay + h.dur) h.dead = true;
+}
+
 function updatePickups(dt) {
   const P = Ch.player;
   for (const k of Ch.pickups) {
@@ -1473,7 +2005,7 @@ function updatePickups(dt) {
       k.x += ((P.x - k.x) / d) * dt * 9;
       k.z += ((P.z - k.z) / d) * dt * 9;
     }
-    const back = k.kind === 'crystal' && (k.t > CAST.returnAfter || Ch.cleared);
+    const back = k.kind === 'crystal' && (k.t > (Ch.H.recall || CAST.returnAfter) || Ch.cleared);
     if ((d < (k.kind === 'reward' ? 1.1 : 0.85) && k.t > 0.25) || back) {
       k.taken = true;
       collect(k);
@@ -1525,7 +2057,7 @@ function takeReward(reward) {
       Bus.emit('toast', Ch.kind === 'boss' ? '+15 PV max · PV restaurés' : '+15 PV max', REWARDS.heart.color);
       break;
     case 'shard': {
-      const n = 8 + biome * 4 + rand(6);
+      const n = Math.round((8 + biome * 4 + rand(6)) * Ch.D.shards);
       Meta.shards += n;
       Run.shards += n;
       saveMeta();
@@ -1594,6 +2126,10 @@ function updateChamber(dt) {
   updatePlayer(dt);
   const P = Ch.player, room = Ch.room;
   if (P.state === 'dead') return;
+  if (Ch.timers.length) {
+    for (const tm of Ch.timers) if ((tm.t -= dt) <= 0) tm.fn();
+    Ch.timers = Ch.timers.filter((tm) => tm.t > 0);
+  }
   updateEnemies(dt);
   updateProjectiles(dt);
   updateHazards(dt);
@@ -1610,13 +2146,14 @@ function updateChamber(dt) {
         Ch.projectiles = Ch.projectiles.filter((p) => p.owner === 'player');
         Ch.pickups.push({ kind: 'reward', x: clamp(P.x * 0.3, -2, 2), z: -1.5, t: 0, reward: Run.reward });
         Bus.emit('cleared');
+        roomConquered();
       }
     }
   }
   if (Ch.kind === 'rest') {
     if (!Ch.fountainUsed && Math.hypot(P.x - room.fountain.x, P.z - room.fountain.z) < 2.1) {
       Ch.fountainUsed = true;
-      const heal = Math.round(Run.maxHp * 0.4);
+      const heal = Math.round(Run.maxHp * 0.4 * Ch.D.heal);
       Run.hp = Math.min(Run.maxHp, Run.hp + heal);
       Bus.emit('fountain', heal);
     }

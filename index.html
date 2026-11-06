@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Abysses</title>
-<meta name="description" content="Un roguelike d’action pour téléphone : traverse les Abysses salle après salle, choisis tes bénédictions et terrasse Vorgath le Wyrm.">
+<meta name="description" content="Un roguelike d’action pour téléphone : quatre héros, cinq mondes, des compétences et des bénédictions pour terrasser Azhral, le Dévoreur.">
 <meta name="theme-color" content="#0b0709">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -57,6 +57,7 @@
       <div id="stick"><div id="stick-knob"></div></div>
     </div>
     <div id="buttons">
+      <button class="act act-skill" data-act="skill" type="button" aria-label="Compétence"><img id="skill-icon" alt=""><span class="cd" id="skill-cd"></span></button>
       <button class="act act-cast" data-act="cast" type="button" aria-label="Lancer l’éclat"><img data-glyph="shard" alt=""><span class="ammo" id="cast-ammo"></span></button>
       <button class="act act-special" data-act="special" type="button" aria-label="Spécial"><img data-glyph="spin" alt=""></button>
       <button class="act act-dash" data-act="dash" type="button" aria-label="Esquive"><img data-glyph="dash" alt=""><span class="pips" id="dash-pips"></span></button>
@@ -68,7 +69,7 @@
     <div class="title-wrap">
       <p class="eyebrow">Un roguelike d’action</p>
       <h1 class="title-word">Abysses</h1>
-      <p class="tagline">Trois profondeurs. Six Anciens. Un Wyrm qui t’attend tout au fond.</p>
+      <p class="tagline">Cinq mondes. Quatre héros. Six Anciens. Et le Dévoreur qui t’attend tout au fond.</p>
       <p class="warn" id="no-webgl" hidden>Ce navigateur ne sait pas afficher la 3D (WebGL), nécessaire pour jouer. Essaie avec Chrome ou Safari à jour.</p>
       <div class="menu">
         <button class="btn primary" id="btn-continue" type="button" hidden>Reprendre la descente</button>
@@ -86,8 +87,15 @@
         <p class="hub-sub">Dépense tes éclats d’âme. Ils restent acquis, même après la mort.</p>
         <div class="hub-shards"><img data-glyph="shard" data-color="#c9a8ff" alt=""><b id="hub-shards">0</b><span>éclats d’âme</span></div>
       </header>
+      <h3>Héros</h3>
+      <div class="heroes" id="hub-heroes"></div>
       <h3>Arme</h3>
       <div class="weapons" id="hub-weapons"></div>
+      <h3>Compétence</h3>
+      <div class="skills" id="hub-skills"></div>
+      <h3>Difficulté</h3>
+      <div class="diffs" id="hub-diffs" role="radiogroup" aria-label="Difficulté"></div>
+      <p class="diff-text" id="hub-diff-text"></p>
       <h3>Pouvoirs permanents</h3>
       <div class="upgrades" id="hub-upgrades"></div>
       <p class="hub-stats" id="hub-stats"></p>
@@ -162,9 +170,10 @@
         <li><b>Spécial</b> : un tourbillon qui frappe tout autour de toi et repousse.</li>
         <li><b>Esquive</b> : tu es invulnérable pendant le bond. Attaque juste après pour un coup puissant.</li>
         <li><b>Éclat</b> : lance ton cristal sur un ennemi, puis va le ramasser.</li>
+        <li><b>Compétence</b> : le bouton du haut lance la compétence choisie au Sanctuaire. Elle se recharge avec le temps.</li>
         <li>Les zones <b class="red">rouges au sol</b> annoncent les attaques ennemies : sors-en ou esquive au bon moment.</li>
         <li>Chaque porte montre sa <b>récompense</b>. Les Anciens offrent des <b>bénédictions</b> : choisis-en une parmi trois.</li>
-        <li>La mort te ramène au <b>Sanctuaire</b>, où tes éclats d’âme achètent des pouvoirs permanents.</li>
+        <li>La mort te ramène au <b>Sanctuaire</b>, où tes éclats d’âme achètent des pouvoirs permanents, de nouveaux héros et des compétences. Tu y choisis aussi la difficulté.</li>
       </ul>
       <button class="btn primary" data-back type="button">Compris</button>
     </div>

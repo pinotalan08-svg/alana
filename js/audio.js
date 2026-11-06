@@ -94,6 +94,11 @@ const Sfx = {
       case 'victory': [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, i) => this.tone(f, f, 0.3, 'triangle', 0.09, i * 0.15)); break;
       case 'noAmmo': this.tone(200, 150, 0.1, 'square', 0.04); break;
       case 'click': this.tone(700, 700, 0.03, 'triangle', 0.04); break;
+      case 'skill': this.tone(300, 900, 0.3, 'sine', 0.09); this.noise(0.3, 0.16, 2400, 0, 'bandpass'); [523, 784, 1047].forEach((f, i) => this.tone(f, f, 0.2, 'triangle', 0.05, 0.05 + i * 0.05)); break;
+      case 'veil': this.tone(400, 120, 0.5, 'sine', 0.1); this.noise(0.5, 0.18, 500); break;
+      case 'shield': [392, 494, 587].forEach((f, i) => this.tone(f, f * 1.5, 0.35, 'triangle', 0.07, i * 0.04)); break;
+      case 'block': this.tone(1200, 900, 0.08, 'square', 0.04); break;
+      case 'beam': this.tone(180, 520, 0.5, 'sawtooth', 0.06); this.noise(0.5, 0.15, 3000, 0, 'bandpass'); break;
       default: break;
     }
   },
@@ -117,7 +122,7 @@ const Music = {
     const combat = inRun() && UI.screen === null && Ch.enemies.length > 0;
     const boss = combat && Ch.kind === 'boss';
     const beat = boss ? 0.2 : combat ? 0.24 : 0.36;
-    const root = [146.83, 130.81, 110][Ch ? Ch.biome : 0];
+    const root = [146.83, 130.81, 110, 123.47, 98][Ch ? Ch.biome : 0] || 110;
     while (this.next < Sfx.ctx.currentTime + 0.3) {
       const s = this.step++ % 16, t = this.next - Sfx.ctx.currentTime;
       if (s === 0) Sfx.tone(root / 2, root / 2, beat * 15, 'sawtooth', 0.05, t, this.bus);
@@ -167,6 +172,11 @@ Bus.on('slam', () => {
   buzz(25);
 });
 Bus.on('blast', () => Sfx.play('blast'));
+Bus.on('skill', (id) => Sfx.play(id === 'veil' ? 'veil' : id === 'aegis' ? 'shield' : id === 'renewal' ? 'heal' : 'skill'));
+Bus.on('blocked', () => Sfx.play('block'));
+Bus.on('aegisBurst', () => Sfx.play('slam'));
+Bus.on('beam', () => Sfx.play('beam'));
+Bus.on('skillWait', () => Sfx.play('noAmmo'));
 Bus.on('enemyAttack', () => Sfx.play('enemyAttack'));
 Bus.on('enemyShoot', () => Sfx.play('enemyShoot'));
 Bus.on('roar', () => {

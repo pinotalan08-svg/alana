@@ -1,5 +1,5 @@
 // Offline support: the game shell is cached on first visit, so it runs without network afterwards.
-const CACHE = 'abysses-v4';
+const CACHE = 'abysses-v5';
 // fonts and three.js come from CDNs: cached on first use so the game keeps working offline
 const EXT_CACHE = 'abysses-ext-v1';
 const EXT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com', 'cdnjs.cloudflare.com'];

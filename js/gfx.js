@@ -66,6 +66,47 @@ function glowCanvas() {
 // ---- Interface glyphs (vector, drawn in a 100 x 100 box) ----------------------------------------
 
 const GLYPHS = {
+  shield(g) {
+    g.beginPath();
+    g.moveTo(50, 6);
+    g.lineTo(86, 18);
+    g.bezierCurveTo(86, 54, 72, 80, 50, 94);
+    g.bezierCurveTo(28, 80, 14, 54, 14, 18);
+    g.closePath();
+    g.fill();
+    g.globalCompositeOperation = 'destination-out';
+    g.beginPath();
+    g.moveTo(50, 22);
+    g.lineTo(72, 30);
+    g.bezierCurveTo(72, 54, 63, 70, 50, 79);
+    g.bezierCurveTo(37, 70, 28, 54, 28, 30);
+    g.closePath();
+    g.fill();
+    g.globalCompositeOperation = 'source-over';
+    g.beginPath();
+    g.moveTo(50, 34);
+    g.lineTo(62, 39);
+    g.bezierCurveTo(62, 52, 57, 61, 50, 66);
+    g.bezierCurveTo(43, 61, 38, 52, 38, 39);
+    g.closePath();
+    g.fill();
+  },
+  eye(g) {
+    g.beginPath();
+    g.moveTo(6, 50);
+    g.bezierCurveTo(26, 18, 74, 18, 94, 50);
+    g.bezierCurveTo(74, 82, 26, 82, 6, 50);
+    g.closePath();
+    g.fill();
+    g.globalCompositeOperation = 'destination-out';
+    g.beginPath();
+    g.arc(50, 50, 20, 0, Math.PI * 2);
+    g.fill();
+    g.globalCompositeOperation = 'source-over';
+    g.beginPath();
+    g.ellipse(50, 50, 7, 14, 0, 0, Math.PI * 2);
+    g.fill();
+  },
   bolt(g) {
     g.beginPath();
     g.moveTo(58, 6); g.lineTo(24, 56); g.lineTo(46, 56); g.lineTo(38, 94); g.lineTo(76, 40); g.lineTo(53, 40); g.lineTo(66, 6);

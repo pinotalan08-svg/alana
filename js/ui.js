@@ -77,6 +77,7 @@ function initUI() {
   Bus.on('fountain', (n) => toast(`La fontaine te rend ${n} PV`, '#7cd8ff'));
   Bus.on('noAmmo', () => toast('Ton éclat est au sol : va le ramasser'));
   Bus.on('dodged', () => toast('Esquivé !', '#a6ec7e'));
+  Bus.on('skillWait', (t) => toast(`Compétence prête dans ${Math.ceil(t)} s`));
   Bus.on('toast', toast);
   Bus.on('bossDown', (e) => banner('Gardien vaincu', e.def.name, 'boss'));
   Bus.on('hurt', () => {
@@ -95,14 +96,17 @@ function onChamber() {
   const biome = BIOMES[Ch.biome];
   UI.last = {};
   $('attack-icon').src = emblemURL(Run.weapon === 'bow' ? 'bow' : 'sword', '#f1e6d0', 96, true);
+  const sk = SKILLS[Run.skill];
+  $('skill-icon').src = emblemURL(sk.glyph, sk.color, 96, true);
+  document.querySelector('.act-skill').style.setProperty('--skill', sk.color);
   renderBoonsHud();
   if (Ch.kind === 'boss') {
     const d = ENEMIES[biome.boss];
-    banner(d.title, d.name, 'boss');
+    banner(d.final ? `Gardien final · ${d.title}` : d.title, d.name, 'boss');
   } else if (Ch.kind === 'rest') {
     banner('Un moment de répit', 'Halte');
   } else if (Ch.step === 0) {
-    banner(`Profondeur ${Ch.biome + 1}`, biome.name);
+    banner(`Monde ${Ch.biome + 1} sur ${BIOMES.length}`, biome.name);
   }
 }
 
@@ -143,6 +147,15 @@ function updateHud() {
     }
   }
   setText('cast-ammo', String(P.castAmmo));
+  // skill recharge: a wedge that shrinks, and the seconds left
+  const cdr = P.skillCd > 0 ? Math.ceil(P.skillCd / P.skillMax * 50) / 50 : 0;
+  if (UI.last.cdr !== cdr) {
+    UI.last.cdr = cdr;
+    const btn = document.querySelector('.act-skill');
+    btn.style.setProperty('--cd', String(cdr));
+    btn.classList.toggle('ready', cdr === 0);
+  }
+  setText('skill-cd', P.skillCd > 0 ? String(Math.ceil(P.skillCd)) : '');
   document.querySelector('.act-cast').classList.toggle('empty', P.castAmmo === 0);
   const where = Ch.kind === 'boss' ? 'Gardien' : Ch.kind === 'rest' ? 'Halte' : `Salle ${Ch.step + 1} / ${ROOMS_PER_BIOME}`;
   setText('where-biome', BIOMES[Ch.biome].name);
@@ -203,8 +216,106 @@ function showTitle() {
   showScreen('title');
 }
 
+function priceTag(cost) {
+  const tag = document.createElement('span');
+  tag.className = 'price';
+  tag.append(glyphImg('shard', '#c9a8ff', 48, true), document.createTextNode(String(cost)));
+  return tag;
+}
+
+function renderHeroes() {
+  const box = $('hub-heroes');
+  box.textContent = '';
+  for (const [id, h] of Object.entries(HEROES)) {
+    const owned = !!Meta.heroes[id];
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = `hero${Meta.hero === id && owned ? ' on' : ''}${owned ? '' : ' locked'}`;
+    card.style.setProperty('--hero', h.color);
+    const img = document.createElement('img');
+    img.alt = '';
+    img.src = heroPortrait(id) || emblemURL('star', h.color, 160, true);
+    const name = document.createElement('strong');
+    name.textContent = h.name;
+    const title = document.createElement('em');
+    title.textContent = h.title;
+    const stats = document.createElement('span');
+    stats.textContent = h.stats;
+    const trait = document.createElement('span');
+    trait.textContent = h.trait;
+    card.append(img, name, title, stats, trait);
+    if (!owned) card.append(priceTag(h.cost));
+    card.disabled = !owned && Meta.shards < h.cost;
+    card.setAttribute('aria-label', owned ? `${h.name}, ${h.title}` : `${h.name} : débloquer pour ${h.cost} éclats`);
+    card.onclick = () => {
+      if (owned) selectHero(id);
+      else if (unlockHero(id)) Sfx.play('boon');
+      openHub();
+    };
+    box.append(card);
+  }
+}
+
+function renderSkills() {
+  const box = $('hub-skills');
+  box.textContent = '';
+  for (const [id, sk] of Object.entries(SKILLS)) {
+    const owned = !!Meta.skills[id], heroLock = !owned && sk.cost === undefined;
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = `skill${Meta.skill === id && owned ? ' on' : ''}${owned ? '' : ' locked'}`;
+    row.style.setProperty('--skill', sk.color);
+    const name = document.createElement('strong');
+    name.textContent = sk.name;
+    const p = document.createElement('p');
+    p.textContent = sk.text;
+    const meta = document.createElement('small');
+    meta.textContent = heroLock ? `Recharge ${sk.cd} s · vient avec ${HEROES[sk.hero].name}` : `Recharge ${sk.cd} s${sk.hero ? ` · compétence de ${HEROES[sk.hero].name}` : ''}`;
+    row.append(glyphImg(sk.glyph, owned ? sk.color : '#6a5a60', 96), name, p, meta);
+    if (!owned && !heroLock) row.append(priceTag(sk.cost));
+    row.disabled = heroLock || (!owned && Meta.shards < sk.cost);
+    row.onclick = () => {
+      if (owned) selectSkill(id);
+      else if (unlockSkill(id)) Sfx.play('boon');
+      openHub();
+    };
+    box.append(row);
+  }
+}
+
+const DIFF_COLORS = { easy: '#a6ec7e', normal: '#ffd98a', hard: '#ff9b3a', nightmare: '#ff5a5e' };
+
+function renderDifficulties() {
+  const box = $('hub-diffs');
+  box.textContent = '';
+  const cur = diffDef(Meta.difficulty);
+  for (const d of DIFFICULTIES) {
+    const open = difficultyOpen(d);
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(cur.id === d.id));
+    b.className = cur.id === d.id ? 'on' : '';
+    b.style.setProperty('--diff', DIFF_COLORS[d.id]);
+    b.textContent = d.name;
+    const small = document.createElement('small');
+    small.textContent = !open ? 'verrouillée' : Meta.cleared[d.id] ? '★ vaincue' : `éclats ×${String(d.shards).replace('.', ',')}`;
+    b.append(small);
+    b.disabled = !open;
+    b.onclick = () => {
+      selectDifficulty(d.id);
+      openHub();
+    };
+    box.append(b);
+  }
+  $('hub-diff-text').textContent = difficultyOpen(cur) ? cur.text : 'Cauchemar se débloque après une première victoire.';
+}
+
 function openHub() {
   $('hub-shards').textContent = Meta.shards;
+  renderHeroes();
+  renderSkills();
+  renderDifficulties();
   const wbox = $('hub-weapons');
   wbox.textContent = '';
   for (const id of ['sword', 'bow']) {
@@ -365,7 +476,7 @@ function openShop() {
 
 function openPause() {
   if (!inRun() || UI.screen) return;
-  $('pause-info').textContent = `${BIOMES[Ch.biome].name} · salle ${Run.room + 1} sur ${TOTAL_ROOMS} · ${Run.kills} ennemis vaincus`;
+  $('pause-info').textContent = `${HEROES[Run.hero].name} · ${diffDef(Run.diff).name} · ${BIOMES[Ch.biome].name} · salle ${Run.room + 1} sur ${TOTAL_ROOMS} · ${Run.kills} ennemis vaincus`;
   const box = $('pause-boons');
   box.textContent = '';
   if (!Run.boons.length) {
@@ -397,12 +508,16 @@ function showEnd(won) {
   const title = $('end-title');
   title.textContent = won ? 'Victoire' : 'Fin de la descente';
   title.classList.toggle('won', won);
+  const finalBoss = ENEMIES[BIOMES[BIOMES.length - 1].boss];
   $('end-line').textContent = won
-    ? 'Vorgath s’effondre. Les Abysses se taisent, pour un temps.'
+    ? `${finalBoss.name.split(',')[0]} s’effondre. Le Néant se tait, et les Abysses avec lui, pour un temps.`
     : `${Ch.kind === 'boss' ? `Face à ${ENEMIES[BIOMES[Ch.biome].boss].name}` : Ch.kind === 'rest' ? `${BIOMES[Ch.biome].name}, à la halte` : `${BIOMES[Ch.biome].name}, salle ${Ch.step + 1}`} : les Abysses ont eu le dernier mot. Pas pour longtemps.`;
   const dl = $('end-stats');
   dl.textContent = '';
   const rows = [
+    ['Héros', HEROES[Run.hero].name],
+    ['Difficulté', diffDef(Run.diff).name],
+    ['Monde atteint', `${BIOMES[Ch.biome].name} (${Ch.biome + 1} sur ${BIOMES.length})`],
     ['Salle atteinte', `${Run.room + 1} sur ${TOTAL_ROOMS}`],
     ['Ennemis vaincus', Run.kills],
     ['Durée', formatTime(Run.time)],

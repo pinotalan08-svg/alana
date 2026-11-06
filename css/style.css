@@ -470,6 +470,42 @@ button:focus-visible {
   opacity: 0.3;
 }
 
+/* the skill sits up and to the left of the others; a dark wedge counts down its recharge */
+.act-skill {
+  right: 162px;
+  bottom: 140px;
+  width: 60px;
+  height: 60px;
+  overflow: hidden;
+  border-color: var(--skill, var(--gold-deep));
+  --cd: 0;
+}
+
+.act-skill::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(rgba(6, 3, 8, 0.78) calc(var(--cd) * 360deg), transparent 0);
+  pointer-events: none;
+}
+
+.act-skill.ready {
+  box-shadow: 0 0 14px var(--skill, var(--gold)), 0 3px 10px rgba(0, 0, 0, 0.55);
+}
+
+.act-skill .cd {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 3px #000;
+  pointer-events: none;
+}
+
 .ammo {
   position: absolute;
   right: -2px;
@@ -773,6 +809,179 @@ h3 {
 .weapon.on {
   border-color: var(--gold);
   box-shadow: 0 0 0 1px var(--gold), 0 0 16px rgba(232, 176, 74, 0.25);
+}
+
+.heroes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr));
+  gap: 10px;
+}
+
+.hero {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 2px;
+  padding: 8px 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  background: radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--hero, #ffd98a) 18%, transparent), transparent 70%), var(--panel-2);
+  text-align: center;
+}
+
+.hero > img {
+  width: 104px;
+  height: 104px;
+  object-fit: contain;
+}
+
+.hero strong {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 19px;
+  color: var(--hero, var(--bone));
+}
+
+.hero em {
+  font-style: normal;
+  font-size: 13px;
+  color: var(--bone);
+}
+
+.hero span {
+  font-size: 12px;
+  color: var(--ash);
+  line-height: 1.3;
+}
+
+.hero.locked > img {
+  filter: grayscale(1) brightness(0.45);
+}
+
+.hero.on {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold), 0 0 16px rgba(232, 176, 74, 0.25);
+}
+
+.hero .price,
+.skill .price {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  border: 1px solid rgba(201, 168, 255, 0.5);
+  background: rgba(70, 40, 100, 0.45);
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--bone);
+}
+
+.hero .price img,
+.skill .price img {
+  width: 14px;
+  height: 14px;
+}
+
+.skills {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+  gap: 8px;
+}
+
+.skill {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  text-align: left;
+}
+
+.skill img {
+  grid-row: 1 / span 3;
+  width: 44px;
+  height: 44px;
+}
+
+.skill strong {
+  font-size: 16px;
+  color: var(--skill, var(--bone));
+}
+
+.skill p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ash);
+}
+
+.skill small {
+  font-size: 12px;
+  color: var(--ash);
+  opacity: 0.85;
+}
+
+.skill .price {
+  grid-column: 2;
+  justify-self: start;
+  margin-top: 2px;
+}
+
+.skill.on {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold), 0 0 14px rgba(232, 176, 74, 0.2);
+}
+
+.skill.locked img {
+  opacity: 0.45;
+}
+
+.diffs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.diffs button {
+  padding: 10px 4px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.diffs button small {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ash);
+}
+
+.diffs button.on {
+  border-color: var(--diff, var(--gold));
+  color: var(--diff, var(--gold-hi));
+  box-shadow: 0 0 0 1px var(--diff, var(--gold)), 0 0 14px rgba(232, 176, 74, 0.2);
+}
+
+.diffs button:disabled {
+  opacity: 0.45;
+}
+
+.diff-text {
+  margin: -2px 0 0;
+  min-height: 2.6em;
+  font-size: 14px;
+  color: var(--ash);
+  text-align: center;
+  text-wrap: balance;
 }
 
 .upgrades {

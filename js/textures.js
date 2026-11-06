@@ -254,8 +254,69 @@ function forgeFloor() {
   return { ...packCanvases(col, rough, emis), normal: normalCanvas(h, 4.5) };
 }
 
+// Glacier: plates of blue ice, frost in patches, deep cracks that hold a little cold light.
+function iceFloor() {
+  const S = TEX, v = voronoiField(55, 4), rnd = mulberry32(56);
+  const tone = Array.from({ length: 16 }, () => 0.85 + rnd() * 0.25);
+  const fine = fbmField(57, 10, 4), frost = fbmField(58, 4, 4), deep = fbmField(59, 2, 3);
+  const cracks = crackMask(60, 12);
+  const h = new Float32Array(S * S), col = new Uint8ClampedArray(S * S * 3), rough = new Uint8ClampedArray(S * S), emis = new Uint8ClampedArray(S * S * 3);
+  for (let i = 0; i < S * S; i++) {
+    const e = v.edge[i], t = tone[v.id[i]];
+    const plate = smooth(0.0, 0.07, e), fr = smooth(0.52, 0.74, frost[i]), crack = cracks[i] * plate;
+    h[i] = plate * (0.82 + fine[i] * 0.18) - crack * 0.3 + fr * 0.06;
+    const lum = t * (0.78 + fine[i] * 0.32) * (1 - crack * 0.45);
+    let r = (30 + deep[i] * 20) * lum, g = (56 + deep[i] * 24) * lum, b = (84 + deep[i] * 26) * lum;
+    r = r * (1 - fr * 0.6) + 118 * fr * 0.6;
+    g = g * (1 - fr * 0.6) + 134 * fr * 0.6;
+    b = b * (1 - fr * 0.6) + 150 * fr * 0.6;
+    const seam = 1 - plate;
+    col[i * 3] = r * (1 - seam * 0.7) + 8 * seam;
+    col[i * 3 + 1] = g * (1 - seam * 0.7) + 18 * seam;
+    col[i * 3 + 2] = b * (1 - seam * 0.7) + 34 * seam;
+    rough[i] = 255 * clamp(0.22 + fr * 0.6 + seam * 0.5 + crack * 0.2, 0.12, 1);
+    const k = Math.max(seam, crack * 0.8) * smooth(0.45, 0.7, deep[i]);
+    if (k > 0) {
+      emis[i * 3] = 16 * k;
+      emis[i * 3 + 1] = 80 * k;
+      emis[i * 3 + 2] = 120 * k;
+    }
+  }
+  return { ...packCanvases(col, rough, emis), normal: normalCanvas(h, 3) };
+}
+
+// Void: polished obsidian tiles with marbled veins; some tiles carry a channel of violet light.
+function voidFloor() {
+  const S = TEX, T = 128, rnd = mulberry32(71);
+  const lit = Array.from({ length: 16 }, () => rnd() < 0.3), tone = Array.from({ length: 16 }, () => 0.8 + rnd() * 0.35);
+  const fine = fbmField(72, 10, 4), vein = fbmField(73, 6, 4), broad = fbmField(74, 2, 3);
+  const h = new Float32Array(S * S), col = new Uint8ClampedArray(S * S * 3), rough = new Uint8ClampedArray(S * S), emis = new Uint8ClampedArray(S * S * 3);
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const i = y * S + x, id = (Math.floor(y / T) % 4) * 4 + (Math.floor(x / T) % 4), xi = x % T, yi = y % T;
+      const de = Math.min(xi, T - 1 - xi, yi, T - 1 - yi);
+      const bevel = smooth(1.5, 8, de), ring = Math.max(0, 1 - Math.abs(de - 15) / 2.4);
+      const vn = smooth(0.035, 0, Math.abs(vein[i] - 0.5)) * bevel;
+      h[i] = bevel * (0.8 + fine[i] * 0.12) - ring * 0.22;
+      const lum = tone[id] * (0.72 + fine[i] * 0.4) * (0.85 + broad[i] * 0.3), grout = 1 - bevel;
+      col[i * 3] = (32 * lum + vn * 40) * bevel + 8 * grout;
+      col[i * 3 + 1] = (24 * lum + vn * 26) * bevel + 5 * grout;
+      col[i * 3 + 2] = (44 * lum + vn * 60) * bevel + 12 * grout;
+      rough[i] = 255 * clamp(0.18 + fine[i] * 0.14 + grout * 0.7 + ring * 0.3, 0.1, 1);
+      const k = (lit[id] ? ring * (0.55 + broad[i] * 0.6) : 0) + vn * 0.07;
+      if (k > 0) {
+        emis[i * 3] = clamp(160 * k, 0, 255);
+        emis[i * 3 + 1] = clamp(70 * k, 0, 255);
+        emis[i * 3 + 2] = clamp(255 * k, 0, 255);
+      }
+    }
+  }
+  return { ...packCanvases(col, rough, emis), normal: normalCanvas(h, 4) };
+}
+
 function floorSet(kind) {
-  return cachedTex('floor-' + kind, () => (kind === 'crypt' ? cryptFloor() : kind === 'cave' ? caveFloor() : forgeFloor()));
+  const make = { crypt: cryptFloor, cave: caveFloor, forge: forgeFloor, ice: iceFloor, void: voidFloor }[kind] || cryptFloor;
+  return cachedTex('floor-' + kind, make);
 }
 
 // ---- Walls and rock ----------------------------------------------------------------------------------
@@ -265,8 +326,9 @@ function wallSet(kind) {
     const S = TEX, rnd = mulberry32(kind.length * 313);
     const fine = fbmField(41 + kind.length, 9, 4), stain = fbmField(42 + kind.length, 2, 3);
     const h = new Float32Array(S * S), col = new Uint8ClampedArray(S * S * 3), rough = new Uint8ClampedArray(S * S);
-    const emis = kind === 'forge' ? new Uint8ClampedArray(S * S * 3) : null;
-    const base = { crypt: [70, 62, 80], cave: [48, 64, 62], forge: [58, 40, 34] }[kind];
+    const emis = kind === 'forge' || kind === 'void' ? new Uint8ClampedArray(S * S * 3) : null;
+    const base = { crypt: [70, 62, 80], cave: [48, 64, 62], forge: [58, 40, 34], ice: [64, 84, 104], void: [34, 26, 46] }[kind];
+    const glowCol = kind === 'void' ? [170, 80, 255] : [255, 90, 20];
     const rowH = kind === 'cave' ? 96 : 64, rows = Math.round(S / rowH);
     const shift = Array.from({ length: rows }, () => rnd() * S);
     const blockW = kind === 'cave' ? 192 : 128;
@@ -283,12 +345,12 @@ function wallSet(kind) {
         col[i * 3] = base[0] * s;
         col[i * 3 + 1] = base[1] * s;
         col[i * 3 + 2] = base[2] * s;
-        rough[i] = 255 * clamp(0.88 - bevel * 0.1, 0.5, 1);
+        rough[i] = 255 * clamp((kind === 'ice' ? 0.42 : kind === 'void' ? 0.5 : 0.88) - bevel * 0.1, 0.2, 1);
         if (emis && bevel < 0.5 && stain[i] > 0.55) {
           const k = (0.5 - bevel) * 2 * smooth(0.55, 0.75, stain[i]);
-          emis[i * 3] = 255 * k;
-          emis[i * 3 + 1] = 90 * k;
-          emis[i * 3 + 2] = 20 * k;
+          emis[i * 3] = glowCol[0] * k;
+          emis[i * 3 + 1] = glowCol[1] * k;
+          emis[i * 3 + 2] = glowCol[2] * k;
         }
       }
     }
@@ -322,6 +384,8 @@ const INLAY = {
   crypt: { metal: '#c9a24a', dark: '#5a3e14', glow: null },
   cave: { metal: '#5fbfa8', dark: '#1d4a40', glow: '#5fe0ff' },
   forge: { metal: '#d8843a', dark: '#4a1e08', glow: '#ff7a2a' },
+  ice: { metal: '#cfe8ff', dark: '#24486c', glow: '#7ad8ff' },
+  void: { metal: '#a070e0', dark: '#220c3a', glow: '#c080ff' },
 };
 
 // A meander band, one repeat per world unit (128 px), drawn as raised metal inlay.
@@ -590,16 +654,23 @@ function abyssTexture(color) {
   });
 }
 
-function lavaTexture() {
-  return cachedTex('lava', () => {
+function lavaTexture(kind = 'forge') {
+  const violet = kind === 'void';
+  return cachedTex('lava-' + kind, () => {
     const S = 256, n = fbmField(93, 4, 4, S), v = voronoiField(94, 4, S);
     const c = makeCanvas(S), g = c.getContext('2d'), img = g.createImageData(S, S), d = img.data;
     for (let i = 0; i < S * S; i++) {
       const crust = Math.max(smooth(0.03, 0.12, v.edge[i]) * smooth(0.3, 0.55, n[i]), smooth(0.62, 0.8, n[i]) * 0.8);
       const hot = 1 - crust;
-      d[i * 4] = 40 + hot * 215;
-      d[i * 4 + 1] = 8 + hot * hot * 150;
-      d[i * 4 + 2] = 4 + hot * hot * hot * 40;
+      if (violet) {
+        d[i * 4] = 24 + hot * hot * 150;
+        d[i * 4 + 1] = 6 + hot * hot * hot * 70;
+        d[i * 4 + 2] = 40 + hot * 215;
+      } else {
+        d[i * 4] = 40 + hot * 215;
+        d[i * 4 + 1] = 8 + hot * hot * 150;
+        d[i * 4 + 2] = 4 + hot * hot * hot * 40;
+      }
       d[i * 4 + 3] = 255;
     }
     g.putImageData(img, 0, 0);

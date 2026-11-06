@@ -30,7 +30,13 @@ function genRoom(biome, kind, doorCount) {
   if (kind === 'combat') {
     const mirror = chance(0.5) ? -1 : 1;
     for (const [x, z] of pick(LAYOUTS)) {
-      const k = floorKind === 'cave' ? (chance(0.5) ? 'crystal' : 'rock') : floorKind === 'forge' ? (chance(0.6) ? 'pillar' : 'rock') : (chance(0.8) ? 'pillar' : 'statue');
+      const r = Math.random();
+      const k = {
+        cave: r < 0.5 ? 'crystal' : 'rock',
+        forge: r < 0.6 ? 'pillar' : 'rock',
+        ice: r < 0.5 ? 'crystal' : r < 0.8 ? 'pillar' : 'rock',
+        void: r < 0.55 ? 'pillar' : r < 0.8 ? 'statue' : 'crystal',
+      }[floorKind] || (r < 0.8 ? 'pillar' : 'statue');
       solid(x * mirror, z, k === 'statue' ? 0.7 : k === 'rock' ? 0.75 : 0.6, k, { h: 1.6 + Math.random() * 1.6 });
     }
     // breakable urns along the edges
@@ -39,7 +45,7 @@ function genRoom(biome, kind, doorCount) {
       const p = freePoint(room, { x: 0, z: room.spawn.z }, 3, 1.2);
       if (p) solid(p.x, p.z, 0.38, 'urn', { hp: 1 });
     }
-    if (floorKind === 'forge') {
+    if (floorKind === 'forge' || floorKind === 'void') {
       const pools = 1 + rand(2);
       for (let i = 0; i < pools; i++) {
         const p = freePoint(room, { x: 0, z: room.spawn.z }, 5, 2.4);
@@ -52,7 +58,7 @@ function genRoom(biome, kind, doorCount) {
     room.merchant = { x: 3, z: -0.2 };
     room.fountain = { x: -3, z: -1.2 };
   } else {
-    for (const [x, z] of [[-6, -6.5], [6, -6.5], [-6, 5], [6, 5]]) solid(x, z, 0.65, floorKind === 'cave' ? 'crystal' : 'pillar', { h: 3.2 });
+    for (const [x, z] of [[-6, -6.5], [6, -6.5], [-6, 5], [6, 5]]) solid(x, z, 0.65, floorKind === 'cave' || floorKind === 'ice' ? 'crystal' : 'pillar', { h: 3.2 });
   }
   // braziers in the corners light every chamber
   const bx = W / 2 - 1, bz = D / 2 - 1.2;

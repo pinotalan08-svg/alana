@@ -6,7 +6,7 @@ Le jeu tourne dans le navigateur, en 3D stylisée (three.js) : personnages en om
 
 Côté rendu :
 
-- **Matériaux** : dalles, roche et magma peints à la volée avec carte de relief, de rugosité et d’émission (les flaques des Grottes brillent, les joints des Forges rougeoient), frises et médaillon en métal incrusté au sol.
+- **Matériaux** : dalles, roche, glace, obsidienne et magma peints à la volée avec carte de relief, de rugosité et d’émission (les flaques des Grottes brillent, les joints des Forges rougeoient, les fissures du Glacier gardent une lueur froide, des runes violettes courent dans le Néant), frises et médaillon en métal incrusté au sol.
 - **Lumière** : rendu HDR avec halo lumineux (*bloom*), étalonnage des couleurs, vignettage, ombres douces, lumières dynamiques pour les braseros, la lave et les explosions.
 - **Effets** : traînée d’épée, arcs de coups, particules et fumée, rayons de lumière, brume et débris flottants au-dessus du gouffre, portails animés aux portes, bannières et cape qui ondulent.
 - **Monstres** : apparition et mort par dissolution lumineuse, éclat blanc à l’impact, teinte glacée ou brûlante selon l’état.
@@ -32,17 +32,29 @@ La descente est sauvegardée au début de chaque salle : si tu quittes, tu repre
 | Bouton tourbillon | K | Spécial : tourbillon qui frappe et repousse tout autour |
 | Bouton flèche | Maj ou L | Esquive : bond invulnérable ; attaquer juste après donne un coup puissant |
 | Bouton cristal | E ou I | Éclat : lance ton cristal, puis va le ramasser |
+| Bouton de compétence (en haut à gauche des commandes) | A (Q sur QWERTY) ou U | Compétence choisie au Sanctuaire, avec un temps de recharge affiché sur le bouton |
 | Bouton pause | Échap ou P | Pause, bénédictions en cours, réglages |
 
 La visée est assistée : l’attaque se tourne vers l’ennemi le plus proche dans la direction du joystick, ou tout autour de toi si tu ne le touches pas. Les zones **rouges au sol** annoncent les attaques ennemies.
 
 ## Une descente
 
-- **Trois profondeurs de six salles** : quatre combats, une halte (fontaine et marchand), puis un gardien. Les Cryptes et la Sentinelle, les Grottes et le Roi des cavernes, les Forges et Vorgath le Wyrm.
+- **Cinq mondes de cinq salles** : trois combats, une halte (fontaine et marchand), puis un gardien. Les Cryptes et la Sentinelle, les Grottes et le Roi des cavernes, les Forges et Vorgath le Wyrm, le Glacier et Isolde la Reine du Givre, puis le Néant et le boss final, **Azhral le Dévoreur**, qui change de tactique en trois phases (rayons tournants, orbes chercheuses, anneaux, invocations).
 - **Des portes à récompenses** : chaque porte annonce ce qu’elle cache (bénédiction, or, cœur de titan, fruit d’ambre, éclats d’âme, enclume) et s’ouvre une fois la récompense ramassée.
 - **Six Anciens, 31 bénédictions** : la Tempête (éclairs en chaîne), la Braise (brûlure), le Givre (ralentit puis gèle), la Marée (repousse contre les murs), l’Ombre (coups critiques), le Vent (vitesse, esquives, éclats). Chaque bénédiction occupe l’attaque, le spécial, l’esquive, l’éclat ou un emplacement passif, avec quatre raretés.
-- **Huit ennemis et trois boss**, chacun avec ses schémas d’attaque : rôdeurs, chauves-souris, archers, gelées qui se divisent, spectres, brutes, démons, plus des versions d’élite.
-- **Le Sanctuaire** : les éclats d’âme achètent des pouvoirs permanents (PV, dégâts, critiques, sursis, esquive supplémentaire…) et débloquent l’Arc des Échos.
+- **Douze ennemis et cinq boss**, chacun avec ses schémas d’attaque : rôdeurs, chauves-souris, archers, gelées qui se divisent, spectres, brutes, démons, revenants gelés, golems de givre (pics de glace), ombres, yeux du Néant (rayons), plus des versions d’élite.
+- **Quatre héros**, chacun avec ses statistiques, un trait et sa compétence :
+
+  | Héros | Profil | Trait | Compétence |
+  | --- | --- | --- | --- |
+  | Kael, le Fils des Abysses | Polyvalent, 60 PV | Récupère 5 PV par salle conquise | Courroux céleste : la foudre frappe 6 ennemis |
+  | Sira, la Lame d’ombre | Rapide, 46 PV, +1 esquive | +8 % de critique, critiques à ×3,6 | Voile d’ombre : 3 s intouchable, coups critiques |
+  | Brann, le Rempart | Lent, 84 PV, +15 % de dégâts | −20 % de dégâts subis, jamais repoussé | Égide : bouclier de 4 s qui explose |
+  | Maëlis, l’Oracle des marées | Mage, 52 PV, +1 éclat | Éclats +60 % de dégâts, qui reviennent seuls | Hiver éternel : gèle tout autour |
+
+- **Six compétences** à équiper (une par descente) : les quatre des héros, plus Météore et Second souffle à débloquer.
+- **Quatre difficultés** : Clémente, Normale, Ardue et Cauchemar (débloquée après une victoire). Elles changent la robustesse, la force et la vitesse des monstres, le nombre d’élites, les soins de la fontaine et les éclats d’âme gagnés.
+- **Le Sanctuaire** : les éclats d’âme débloquent les héros, les compétences, l’Arc des Échos et des pouvoirs permanents (PV, dégâts, critiques, sursis, esquive supplémentaire, recharge de compétence…). Les portraits des héros sont rendus à partir de leurs modèles 3D.
 
 ## Développement
 

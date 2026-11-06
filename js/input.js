@@ -4,8 +4,8 @@
 // keyboard for desktop play. Actions are buffered briefly so a press is never lost mid-swing.
 const Input = {
   move: { x: 0, z: 0 },
-  held: { attack: false, special: false, dash: false, cast: false },
-  buf: { attack: 0, special: 0, dash: 0, cast: 0 },
+  held: { attack: false, special: false, dash: false, cast: false, skill: false },
+  buf: { attack: 0, special: 0, dash: 0, cast: 0, skill: 0 },
   stick: null,
   stickVec: { x: 0, z: 0 },
   keys: new Set(),
@@ -48,7 +48,7 @@ const MOVE_KEYS = {
   KeyA: [-1, 0], ArrowLeft: [-1, 0], KeyD: [1, 0], ArrowRight: [1, 0],
 };
 const ACTION_KEYS = {
-  Space: 'attack', KeyJ: 'attack', KeyK: 'special', KeyL: 'dash', ShiftLeft: 'dash', ShiftRight: 'dash', KeyE: 'cast', KeyI: 'cast',
+  Space: 'attack', KeyJ: 'attack', KeyK: 'special', KeyL: 'dash', ShiftLeft: 'dash', ShiftRight: 'dash', KeyE: 'cast', KeyI: 'cast', KeyQ: 'skill', KeyU: 'skill',
 };
 
 function updateMove() {
